@@ -1,0 +1,53 @@
+--- 
+title: '' 
+author:  |
+    |  $^1$Chicago Botanic Garden, 1000 Lake Cook Road, Glencoe, Illinois 60022, USA  
+    | Reed Clark Benkendorf$^1$^[Author for Correspondence: rbenkendorf@chicagobotanic.org]
+abstract: |
+  \noindent
+keywords: |
+  ex situ conservation, native seed development  
+output:
+  pdf_document: default 
+  toc: no 
+  word_document: default 
+csl: "../citations/conservation-biology.csl" 
+bibliography: ../citations/citations.bib 
+link-citations: yes 
+fig_caption: yes
+always_allow_html: yes 
+header-includes:
+- \usepackage{endfloat}
+- \usepackage{setspace}\doublespacing
+- \usepackage{lineno}
+- \linenumbers
+- \usepackage[width=\textwidth]{caption}
+- \usepackage{wrapfig}
+- \usepackage[export]{adjustbox}
+- \usepackage{rotating} 
+--- 
+
+Target journal: CONSERVATION BIOLOGY
+Article type: Methods
+Word Limit: 5000
+Prompt: 'Papers on a novel conservation-science method or tests of an existing conservation method.'
+
+Paragraph 1 - why ex situ conservation - how is temporary for material to go back out on land. 
+
+Many projects to conserve non-crop wild plant germplasm are well underway. 
+Center for Plant Conservation and the Seeds of Success program launched by the Royal Botanic Gardens Kew... 
+It's counterpart in the USA ... 
+The number of accessions which these projects aim to maintain in collections vary from a minimum of 10, to 20 per species, towards 20 per units within the species range; or simply a collection from each known population if fewer known populations than the standard goal exists. 
+Currently, most collection effort is slightly opportunistic in nature, with administrative units which distribute more funds for these endeavors, or areas near human populations with active volunteer programs representing a large pool of accessions. 
+
+Guidelines have been developed to better capture the genetic diversity of a species across it's range. 
+In the United States two main approaches are used. 
+The first involves using ecoregions, i.e. Omernik level 4, as a stratifying unit to make collections across, and is most commonly used in conservation focused projects, or in areas with high land use modification. 
+The second utilizes provisional seed transfer zones as the stratifying agent, and appears to be the most common approach for collections with immediate goals for use in restoration projects.  
+However, both of these stratification agents are exogenous to any species of interest, and the number of these features is unlikely to meet the coincide with the desired number of collections, e.g. if a species range only crosses 13 ecoregions while 20 collections are desired than 7 collections must be from duplicated zones. 
+
+While the number of accessions desired for collections are based upon empirical plant population genetics data, to our knowledge the current strategies for distributing collection effort across space are based purely on practical intuition. 
+Here we propose a set of increasingly complex alternative sampling schemes which may be utilized for either entire ex-situ conservation projects, certain project areas (e.g. administrative units), or tailored to individual species within the aforementioned types of projects. 
+These schemes are then tested using species-distribution models, and empirical population genetics data, to determine whether they are adequate to capture commonly designated genetic diversity goals for germplasm conservation, and whether  they are interchangeable with each other. 
+
+
