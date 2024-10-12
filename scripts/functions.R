@@ -138,6 +138,8 @@ ggplot() +
 
 ### adding grid
 
+library(tidyverse)
+library(sf)
 library(spData)
 florida <- spData::us_states |> 
   dplyr::filter(NAME == 'Florida') |>
@@ -151,17 +153,15 @@ if(x_dist > y_dist){x_start = 5; y_start = 4} else {y_start = 5; x_start = 4}
 gr <- st_make_grid(florida, n = c(x_start, y_start), square = FALSE)
 ints <- sum(lengths( st_intersects(gr, florida) ) > 0) # 12  grids s
 
-ggplot() + 
-  geom_sf(data = florida) + 
- # geom_sf(data = gr, fill = NA) + 
- # geom_sf(data = gr2, fill = NA) + 
-  geom_sf(data = gr6, fill = NA) 
-
-
 gr6 <- st_make_grid(florida, n = c(6, 6), square = FALSE)
 gr6 <- gr6[ lengths( st_overlaps(gr6, florida) ) > 0, ]
 gr6 <- st_intersection(gr6, florida)
 
+ggplot() + 
+  geom_sf(data = florida) + 
+  # geom_sf(data = gr, fill = NA) + 
+  # geom_sf(data = gr2, fill = NA) + 
+  geom_sf(data = gr6, fill = NA) 
 
 # Determine the size of each grid. 
 
@@ -247,12 +247,9 @@ nf_pct <- setNames(
 )
 
 props <- setNames(
-  c(15, 25, 10, 5, 20, 25), 
+  c(15, 10, 30, 2.5, 17.5, 25), 
   names(nf_pct)
 )
-
-nf_pct < props # if these polygons need more data, than let's reassign these
-# points to the intended recipients. 
 
 # each grid now receives either the maximum number of nearest neighbors if
 # the desired proportion is lower than the existing nearest neighbors, 
@@ -261,46 +258,85 @@ nf_pct < props # if these polygons need more data, than let's reassign these
 d <- st_distance(pts, florida)
 d <- data.frame(apply(d, 2, as.numeric))
 colnames(d) <- florida$NAME
-#d$ID <- pts$ID
 
-assign_pts_frst <- function(x, props){
+
+assign_pts_frst <- function(x, props, nf_pct){
   
   # ensure these are in the same order. so we can match by position
   # in the for loop. 
-  props <- props[order(factor(names(props), levels=colnames(x)))]
+  need_most2least <- names(sort(nf_pct - props))
+  props <- props[need_most2least] ; x <- x[,need_most2least]
   
   x$Assignment  <- NA
+  x$ID <- 1:nrow(x)
   for(i in 1:length(props)){
-    
-    print(props[i])
-    indices <- sort(x[,i], index.return = TRUE)$ix [1:props[i]]
+
+    # we assign the grids to the neediest grids first, and then work back 
+    # removing these points so they are not overwritten. 
+    x_sub <- x[is.na(x$Assignment),]
+    indices <- x_sub[sort(x_sub[,i], index.return = TRUE)$ix [1:props[i]],'ID']
     x[indices, 'Assignment'] <- names(props)[i]
+    
   }
   return(x)
-  
   
   # if only one grid remains, assign all remaining points to it. 
   
 }
 
-assign_final_pts <- function(x, props){
+out <- assign_pts_frst(d, props = props, nf_pct)
+pts$ASS <- out$Assignment
+
+if(any(is.na(out$Assignment))){
   
-  # points are likely to remain in the center of the object. 
-  # We will now try to assign all of these to the groups which do
-  # have not yet come close to adequate representation. 
+  needAssigned <- pts[is.na(pts$ASS),]
+  dist_final_pts <- data.frame(
+    matrix(
+      t(sf::st_distance(needAssigned, pts)), ncol = 2
+    )
+  )
+  dist_final_pts[dist_final_pts==0] <- NA
+  dist_final_pts$ID <- pts$ID
   
-  # remove grids which have achieved there cover goals. 
-  obs_props <- table(x$Assignment)
-  names(props) [(x < props) == TRUE]
+  ob <- vector(mode = 'list', length = ncol(dist_final_pts)-1)
+  for (i in 1:ncol(dist_final_pts)){
+     ob[[i]] <- dist_final_pts[order(dist_final_pts[,i]),  'ID']
+  }
   
 }
 
-out <- assign_pts_frst(d, props = props)
+# points are likely to remain in the center of the object. 
+# We will now try to assign all of these to the groups which do
+# have not yet come close to adequate representation. 
+
+# we will determine what the closest neighbors to the unassigned points are. 
+# to grab them we will buffer the unassigned point and pull out the close neighbors. 
+sdat_mat <- sf::st_distance(pts) |> 
+  as.data.frame() |>
+  apply(2, as.numeric)
+dat_mat[dat_mat==0] <- NA
+buf_dist <- ceiling(mean(apply(dat_mat, 2, min, na.rm=TRUE)) * 0.001) * 1000
+buffered <- sf::st_buffer(needAssigned, dist = buf_dist)
+intersects <- sf::st_intersects(buffered, pts)
+
+for (i in 1:nrow(needAssigned)){
+  needAssigned[i, 'ASS'] <- 
+  names(
+    which.max(
+      table(sf::st_drop_geometry(pts)[unlist(intersects[[i]]),'ASS'], exclude = NA)
+      )
+    )
+}
+
+pts <- dplyr::filter(pts, ! ID %in% needAssigned$ID) |>
+  dplyr::bind_rows( needAssigned ) |>
+  dplyr::select(Assigned = ASS, geometry = x)
 
 
 ggplot() + 
   geom_sf(data = florida) + 
-  geom_sf(data = pts, aes(color = ASS))
+  geom_sf(data = pts, aes(color = Assigned)) + 
+  geom_sf(data = buffered, fill = NA) 
 
 # calculate nearest distances from these polygons to the neighboring polygons. 
 
