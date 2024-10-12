@@ -11,13 +11,13 @@
 #' nc <- sf::st_read(system.file("shape/nc.shp", package="sf")) |>
 #' dplyr::select(NAME)
 #'
-#' zones <- EqualAreaPolygons(nc, n = 10, pts = 1000, projection = 32617)
+#' zones <- EqualAreaSample(nc, n = 20, pts = 1000, projection = 32617)
 #'
 #' plot(nc, main = 'Counties of North Carolina')
 #' plot(zones, main = 'Clusters')
 #' }
 #' @export
-EqualAreaPolygons <- function(x, n, pts, projection, returnProjected){
+EqualAreaSample <- function(x, n, pts, projection, returnProjected){
   
   if(missing(n)){n <- 20}; if(missing(pts)){pts <- 10000}
   if(missing(projection)){
@@ -72,3 +72,245 @@ EqualAreaPolygons <- function(x, n, pts, projection, returnProjected){
   return(voronoi_poly)
   
 }
+
+#' Create a regular tessellating grid over the geographic range
+#' 
+#' This function creates `n` grid cells over a geographic area (`x`), typically a species. It is intended to deal with 'holes' in species ranges to deliver an adequate number of `n`. 
+#' @param x An SF object or terra spatraster. the range over which to generate the clusters.
+#' @param n Numeric. the number of grid cells desired. Defaults to 20. 
+GridSample <- function(x){
+  
+  
+}
+
+
+
+
+#' Design additional collections around already existing collections
+
+
+
+nc <- sf::st_read(system.file("shape/nc.shp", package="sf")) |>
+  dplyr::select(NAME) |>
+  st_transform(32617)
+set.seed(41)
+existing_collections <- nc[sample(5),] |>
+  sf::st_point_on_surface()
+
+ggplot() + 
+  geom_sf(data = existing_collections, color = 'red') + 
+  geom_sf(data = zones, alpha = 0.5) + 
+  geom_sf(data = kmeans_centers)
+
+zones <- st_voronoi(st_union(existing_collections), st_union(nc)) |>
+  st_collection_extract(type = "POLYGON") |> 
+  st_sf() |> 
+  st_intersection(st_union(nc)) 
+zones <- st_intersection(zones, st_union(nc))
+
+
+reg_pts <- sf::st_sample(nc, size = 500, type = 'regular', by_polygon = F) |>
+  sf::st_coordinates(pts)
+fixed_pts <- matrix(rep(sf::st_coordinates(existing_collections), each = 100), ncol = 2)
+pts <- rbind(reg_pts, fixed_pts)
+
+kmeans_res <- kmeans(pts, centers = 20)
+pts$Cluster <- kmeans_res$cluster
+
+kmeans_centers <- setNames(
+  data.frame(kmeans_res['centers'], 1:nrow(kmeans_res['centers'][[1]])), 
+  # use the centers as voronoi cores ... ?
+  c('X', 'Y', 'Cluster'))
+#kmeans_centers_10 <- sf::st_as_sf(kmeans_centers, coords = c('X', 'Y'), crs = 32617)
+kmeans_centers_100 <- sf::st_as_sf(kmeans_centers, coords = c('X', 'Y'), crs = 32617)
+
+ggplot() + 
+  geom_sf(data = existing_collections, color = 'red') + 
+  geom_sf(data = zones, alpha = 0.5) + 
+  geom_sf(data = kmeans_centers_10, alpha = 0.5, color = 'blue') + 
+  geom_sf(data = kmeans_centers_100, alpha = 0.5, color = 'purple')
+
+
+
+
+
+
+
+### adding grid
+
+library(spData)
+florida <- spData::us_states |> 
+  dplyr::filter(NAME == 'Florida') |>
+  sf::st_transform(32617)
+
+bound <- st_bbox(florida)
+x_dist <- bound['xmax'] - bound['xmin']
+y_dist <- bound['ymax'] - bound['ymin']
+if(x_dist > y_dist){x_start = 5; y_start = 4} else {y_start = 5; x_start = 4}
+
+gr <- st_make_grid(florida, n = c(x_start, y_start), square = FALSE)
+ints <- sum(lengths( st_intersects(gr, florida) ) > 0) # 12  grids s
+
+ggplot() + 
+  geom_sf(data = florida) + 
+ # geom_sf(data = gr, fill = NA) + 
+ # geom_sf(data = gr2, fill = NA) + 
+  geom_sf(data = gr6, fill = NA) 
+
+
+gr6 <- st_make_grid(florida, n = c(6, 6), square = FALSE)
+gr6 <- gr6[ lengths( st_overlaps(gr6, florida) ) > 0, ]
+gr6 <- st_intersection(gr6, florida)
+
+
+# Determine the size of each grid. 
+
+gr6 <- st_as_sf(gr6) |> 
+  mutate(Area = as.numeric(st_area(gr6)))
+
+polys2merge <- arrange(gr6, Area) |>
+  head(n = nrow(gr6) - 20) 
+
+# Determine neighboring polygons
+
+neighbors <- spdep::poly2nb(gr6, queen = FALSE)
+coords <- st_coordinates(st_centroid(st_geometry(gr6)))
+plot(st_geometry(gr6), border = "grey")
+plot(neighbors, coords, add = TRUE)
+
+# order polysgons by size, all polygons > 20 will be merged with a neighboring polygon
+indices <- gr6$Area >= sort(gr6$Area, decreasing = TRUE)[20] 
+gr6_neigh2snap2 <- neighbors[indices]
+gr6_merge_into <- gr6[indices, ]
+
+full_sized_neighbors <- which(gr6$Area / max(gr6$Area) >= 0.975) # consider these to be full sized grids
+
+# identify neighboring polygons
+gr6_neighs2remove <- neighbors[!indices]
+
+# identify the relative sizes of the neighboring polygons
+
+size_props <- function(x, data, full_sized_neighbors){
+  
+  # if there are neighbors which are full grid size, they will get no records IF
+  # there is at least one or more smaller neighbor grid. 
+  if(length(x) > 1){x_sub <- x[!x %in% full_sized_neighbors]}
+  if(exists('x_sub') == TRUE){
+    if(length(x_sub > 1)){x <- x_sub} else {x <- x}
+  }
+  
+  grids <- sf::st_drop_geometry(data)
+  areas <- grids[x, 'Area']
+  totalArea <- sum(as.numeric(areas))
+  
+  # if multiple polygon neighbors exist, determine their sizes relative to each other
+  recs2receive <- totalArea / (as.numeric(areas)) * 10 # percent of records to receive
+  replace(recs2receive, recs2receive == 10, 100)
+}
+
+o <- lapply(
+  gr6_neighs2remove, 
+  FUN = size_props, 
+  data = gr6, 
+  full_sized_neighbors = full_sized_neighbors)
+
+o
+
+# place random points in the polygon which will be dissolved with the larger polygons
+
+
+
+
+
+florida <- spData::us_states |> 
+  dplyr::filter(
+    NAME %in% 
+      c('Kansas', 'Wyoming', 'Nebraska', 'Utah',  'New Mexico', 'Oklahoma')) |>
+  sf::st_transform(32617)
+
+co <- spData::us_states |>
+  filter(NAME == 'Colorado')|>
+  sf::st_transform(32617)
+
+pts <- st_sample(co, size = 100, type = 'regular') |>
+  st_as_sf() |> 
+  mutate(ID = 1:n())
+
+# identify the nearest neighbor which the points can be assigned to. 
+pts$nf <- sf::st_nearest_feature(pts, florida) 
+pts$nf <- sf::st_drop_geometry(florida)[pts$nf,'NAME']
+
+nrow(pts) / table(pts$nf) # percent nearest feature. 
+nf_pct <- setNames(
+  as.numeric(table(pts$nf)) / nrow(pts) * 100, 
+  names(table(pts$nf))
+)
+
+props <- setNames(
+  c(15, 25, 10, 5, 20, 25), 
+  names(nf_pct)
+)
+
+nf_pct < props # if these polygons need more data, than let's reassign these
+# points to the intended recipients. 
+
+# each grid now receives either the maximum number of nearest neighbors if
+# the desired proportion is lower than the existing nearest neighbors, 
+# or the proportion of nearest points meeting the desired proportion
+
+d <- st_distance(pts, florida)
+d <- data.frame(apply(d, 2, as.numeric))
+colnames(d) <- florida$NAME
+#d$ID <- pts$ID
+
+assign_pts_frst <- function(x, props){
+  
+  # ensure these are in the same order. so we can match by position
+  # in the for loop. 
+  props <- props[order(factor(names(props), levels=colnames(x)))]
+  
+  x$Assignment  <- NA
+  for(i in 1:length(props)){
+    
+    print(props[i])
+    indices <- sort(x[,i], index.return = TRUE)$ix [1:props[i]]
+    x[indices, 'Assignment'] <- names(props)[i]
+  }
+  return(x)
+  
+  
+  # if only one grid remains, assign all remaining points to it. 
+  
+}
+
+assign_final_pts <- function(x, props){
+  
+  # points are likely to remain in the center of the object. 
+  # We will now try to assign all of these to the groups which do
+  # have not yet come close to adequate representation. 
+  
+  # remove grids which have achieved there cover goals. 
+  obs_props <- table(x$Assignment)
+  names(props) [(x < props) == TRUE]
+  
+}
+
+out <- assign_pts_frst(d, props = props)
+
+
+ggplot() + 
+  geom_sf(data = florida) + 
+  geom_sf(data = pts, aes(color = ASS))
+
+# calculate nearest distances from these polygons to the neighboring polygons. 
+
+# split the number of points available for merging to the candidate polygons based on their size ratios. 
+
+# merge these surplus polygons to neighbors. 
+
+# determine if excess disconnected polygons exist. 
+
+# add these polygons to their nearest neighbor by distance. 
+
+
+
