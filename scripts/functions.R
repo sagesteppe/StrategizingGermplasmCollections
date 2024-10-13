@@ -311,7 +311,7 @@ if(any(is.na(out$Assignment))){
 
 # we will determine what the closest neighbors to the unassigned points are. 
 # to grab them we will buffer the unassigned point and pull out the close neighbors. 
-sdat_mat <- sf::st_distance(pts) |> 
+dat_mat <- sf::st_distance(pts) |> 
   as.data.frame() |>
   apply(2, as.numeric)
 dat_mat[dat_mat==0] <- NA
@@ -335,18 +335,27 @@ pts <- dplyr::filter(pts, ! ID %in% needAssigned$ID) |>
 
 ggplot() + 
   geom_sf(data = florida) + 
-  geom_sf(data = pts, aes(color = Assigned)) + 
-  geom_sf(data = buffered, fill = NA) 
-
-# calculate nearest distances from these polygons to the neighboring polygons. 
-
-# split the number of points available for merging to the candidate polygons based on their size ratios. 
-
-# merge these surplus polygons to neighbors. 
-
-# determine if excess disconnected polygons exist. 
-
-# add these polygons to their nearest neighbor by distance. 
+  geom_sf(data = pts_s, aes(color = ID, shape = Assigned)) 
 
 
+# Determine if there are points which are 'disconnected' from their remaining neighbors
+nn <- spdep::knearneigh(pts, k=4)[['nn']]
 
+indices <- vector(mode = 'list', length = nrow(pts))
+neighs <- vector(mode = 'list', length = nrow(pts))
+focal <- vector(mode = 'list', length = nrow(pts))
+matches <- vector( length = nrow(pts))
+for (i in 1:nrow(pts)){
+
+  indices[[i]] <- nn[i,]
+  neighs[[i]] <- 
+    names(table(sf::st_drop_geometry(pts)[indices[[i]],'Assigned']))
+  focal[[i]] <- sf::st_drop_geometry(pts)[i,'Assigned']
+  
+  matches[i] <- focal[[i]] %in% neighs[[i]]
+  
+}
+
+# if a point is disconnected, then assign it to the neighbor with the fewest points
+
+which(matches==F)
