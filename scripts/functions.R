@@ -280,10 +280,10 @@ assign_pts_frst <- function(x, props, nf_pct){
   }
   return(x)
   
-  # if only one grid remains, assign all remaining points to it. 
-  
 }
 
+
+# if only one grid remains, assign all remaining points to it. 
 out <- assign_pts_frst(d, props = props, nf_pct)
 pts$ASS <- out$Assignment
 
@@ -319,6 +319,8 @@ buf_dist <- ceiling(mean(apply(dat_mat, 2, min, na.rm=TRUE)) * 0.001) * 1000
 buffered <- sf::st_buffer(needAssigned, dist = buf_dist)
 intersects <- sf::st_intersects(buffered, pts)
 
+nn <- spdep::knearneigh(pts, k=4)[['nn']][needAssigned$ID,]
+
 for (i in 1:nrow(needAssigned)){
   needAssigned[i, 'ASS'] <- 
   names(
@@ -331,11 +333,6 @@ for (i in 1:nrow(needAssigned)){
 pts <- dplyr::filter(pts, ! ID %in% needAssigned$ID) |>
   dplyr::bind_rows( needAssigned ) |>
   dplyr::select(Assigned = ASS, geometry = x)
-
-
-ggplot() + 
-  geom_sf(data = florida) + 
-  geom_sf(data = pts_s, aes(color = ID, shape = Assigned)) 
 
 
 # Determine if there are points which are 'disconnected' from their remaining neighbors
@@ -351,11 +348,22 @@ for (i in 1:nrow(pts)){
   neighs[[i]] <- 
     names(table(sf::st_drop_geometry(pts)[indices[[i]],'Assigned']))
   focal[[i]] <- sf::st_drop_geometry(pts)[i,'Assigned']
-  
   matches[i] <- focal[[i]] %in% neighs[[i]]
   
 }
 
-# if a point is disconnected, then assign it to the neighbor with the fewest points
+# if a point is disconnected from it's remaining neighbors then assign it to the neighbor which needs more points to reach the ideal sample ratio for it's grid class.  
+if(any(matches==F)){
+  indices <- neighs[which(matches==F)] 
+  
+  realized <- table(pts$Assigned)/ nrow(pts) *100
+  diff <- realized - props # the first entry below will gain the point. 
+  
+  for (i in 1:length(indices)){
+    pts[i,'Assigned'] <-
+      names(sort(diff[names(diff) %in% unlist(neighs[i])], decreasing = FALSE)[1])
+  }
+}
 
-which(matches==F)
+
+
