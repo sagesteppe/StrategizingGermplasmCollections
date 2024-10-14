@@ -141,27 +141,87 @@ ggplot() +
 library(tidyverse)
 library(sf)
 library(spData)
-florida <- spData::us_states |> 
-  dplyr::filter(NAME == 'Florida') |>
-  sf::st_transform(32617)
 
-bound <- st_bbox(florida)
-x_dist <- bound['xmax'] - bound['xmin']
-y_dist <- bound['ymax'] - bound['ymin']
-if(x_dist > y_dist){x_start = 5; y_start = 4} else {y_start = 5; x_start = 4}
+#' It appears that the default values from sf are adequate to minimize the number of grids, and to decrease the variance in their size over the target area. 
+#' 
+#' @param x a species range. 
+testGridSizes <- function(x){
+  
+  bound <- st_bbox(target)
+  x_dist <- bound['xmax'] - bound['xmin']
+  y_dist <- bound['ymax'] - bound['ymin']
+  
+  ratio <- x_dist/y_dist
+  rm(bound, x_dist, y_dist)
+  # values < 0.8 indicate y is considerable greater than x
+  # values near 1 indicate a natural symmetry between x and y, both values can start at 5. 
+  # values < 0.9 > 0.8 indicate y is greater than x
+  # values > 1.4 indicate x is much greater than y
+  
+  if(ratio < 0.8){ # these areas are very long
+    x_start = 4; y_start = 7} else if(ratio > 0.8 & ratio < 0.9) {
+      x_start = 4; y_start = 6} else if(ratio > 0.9 & ratio < 1.2) { # equilateral
+        x_start = 5; y_start = 5} else {
+          x_start = 6; y_start = 4} 
+  
+  gr <- sf::st_make_grid(target, n = c(x_start, y_start), square = FALSE)
+  gr <- sf::st_intersection(gr, target) 
+  areas <- as.numeric(sf::st_area(gr))
+  areas <- sort(areas / max(areas) * 100, decreasing = TRUE)[1:20]
+  var_Original <- var(areas,  na.rm = TRUE)
+  
+  # try with bigger grids
+  gr_larger <- sf::st_make_grid(target, n = c(x_start-1, y_start-1), square = FALSE)
+  gr_larger <- sf::st_intersection(gr_larger, target) 
+  gr_larger_area <- as.numeric(sf::st_area(gr_larger))
+  gr_larger_area <- sort(gr_larger_area / max(gr_larger_area) * 100, decreasing = TRUE)[1:20]
+  var_larger <- var(gr_larger_area, na.rm = TRUE)
+  
+  # try with biggest grids
+  gr_largest <- sf::st_make_grid(target, n = c(x_start-2, y_start-2), square = FALSE)
+  gr_largest <- sf::st_intersection(gr_largest, target) 
+  gr_largest_area <- as.numeric(sf::st_area(gr_largest))
+  gr_largest_area <- sort(gr_largest_area / max(gr_largest_area) * 100, decreasing = TRUE)[1:20]
+  var_largest <- var(gr_largest_area, na.rm = TRUE)
+  
+  # try with smaller grids
+  gr_smaller <- sf::st_make_grid(target, n = c(x_start+1, y_start+1), square = FALSE)
+  gr_smaller <- sf::st_intersection(gr_smaller, target) 
+  gr_smaller_area <- as.numeric(sf::st_area(gr_smaller))
+  gr_smaller_area <- sort(gr_smaller_area / max(gr_smaller_area) * 100, decreasing = TRUE)[1:20]
+  var_small <- var(gr_smaller_area, na.rm = TRUE)
+  
+  # try with smallest grids
+  gr_smallest <- sf::st_make_grid(target, n = c(x_start+2, y_start+2), square = FALSE)
+  gr_smallest <- sf::st_intersection(gr_smallest, target) 
+  gr_smallest_area <- as.numeric(sf::st_area(gr_smallest))
+  gr_smallest_area <- sort(gr_smallest_area / max(gr_smallest_area) * 100, decreasing = TRUE)[1:20]
+  var_smallest <- var(gr_smallest_area, na.rm = TRUE)
+  
+  results <- data.frame(
+    Name = c('Smallest', 'Smaller', 'Original',   'Larger', 'Largest'),
+    Grids = c(
+      length(gr_smallest), length(gr_smaller), 
+      length(gr), length(gr_large), length(gr_largest)), 
+    Variance = c(var_smallest, var_smaller, var_Original, var_larger, var_largest),
+    GridNOx = c(x_start+2, x_start +1, x_start, x_start-1, x_start-2), 
+    GridNOy = c(y_start+2, y_start+1, y_start, y_start-1, y_start-2)
+  )
+  return(results)
+}
 
-gr <- st_make_grid(florida, n = c(x_start, y_start), square = FALSE)
-ints <- sum(lengths( st_intersects(gr, florida) ) > 0) # 12  grids s
+target <- spData::us_states |> 
+  dplyr::filter(NAME == 'California') |>
+  sf::st_transform(32615)
 
-gr6 <- st_make_grid(florida, n = c(6, 6), square = FALSE)
-gr6 <- gr6[ lengths( st_overlaps(gr6, florida) ) > 0, ]
-gr6 <- st_intersection(gr6, florida)
+testGridSizes(target)
 
 ggplot() + 
-  geom_sf(data = florida) + 
-  # geom_sf(data = gr, fill = NA) + 
-  # geom_sf(data = gr2, fill = NA) + 
-  geom_sf(data = gr6, fill = NA) 
+  geom_sf(data = gr)+ 
+  geom_sf(data = gr_large, color = 'green')# + 
+  geom_sf(data = gr_plus, color = 'red', fill = NA)
+
+
 
 # Determine the size of each grid. 
 
@@ -215,7 +275,17 @@ o <- lapply(
 
 o
 
-# place random points in the polygon which will be dissolved with the larger polygons
+
+
+
+
+
+
+
+
+
+
+#' place random points in the polygon which will be dissolved with the larger polygons
 
 assignGrid_pts <- function(neighb_grid, focal_grid){
   
@@ -248,7 +318,7 @@ assignGrid_pts <- function(neighb_grid, focal_grid){
   )
   
   props <- setNames( # dummy data, real data should come from 
-    c(10, 30, 15, 25, 20), 
+    c(20, 20, 20, 20, 20), 
     names(nf_pct)
   )
   
@@ -380,55 +450,77 @@ focal_grid <- spData::us_states |>
 
 test <- assignGrid_pts(neighb_grid, focal_grid)
 
-test <- test |>
-  dplyr::group_by(Assigned) |>
-  summarise(geometry = sf::st_combine(geometry)) |>
-  sf::st_convex_hull() |>
-  sf::st_difference() |>
-  sf::st_intersection(focal_grid)
+#' turn the point grid suggestions made by assignGrid_pts into polygons
+#' 
+#' @param x output of `assignGrid_pts`
+#' @param neighb_grid the neighboring grid options
+#' @param focal_grid the grid to reassign the area of. 
 
-ggplot() + 
-  geom_sf(data = test, aes(color = Assigned), fill = NA)
-
-pts <- st_sample(focal_grid, 10000) |>
-  st_as_sf()
-
-pts$Assigned <- sf::st_drop_geometry(
-  test$Assigned)[ sf::st_nearest_feature(pts, test)] 
-pts <- pts |>
-  group_by(Assigned) |>
-  summarise(geometry = st_union(x)) |>
-  st_convex_hull()
-
-d <- sf::st_difference(pts, pts)
-
-ggplot() + 
-  geom_sf(data = d, aes(color=Assigned), fill = NA)
-
-
-
-pts <- pts |>
-  st_as_sf() |>
-  mutate(
-    X = st_coordinates(pts)[,1], 
-    Y = st_coordinates(pts)[,2], 
-    Assigned = factor(Assigned)
-) |>
-  sf::st_drop_geometry()
-
-
-library(caret)
-library(terra)
+snapGrids <- function(x, neighb_grid, focal_grid){
   
-ind <- sample(2, nrow(pts), replace=TRUE, prob=c(0.8, 0.2))
-train <- pts[ind==1,]
-test <- pts[ind==2,]
-knn.pred <- train(Assigned ~ ., data = train,  method = "knn")
+  # combine the output of `assignGrid_pts` together and create a small
+  # polygon around there extent. 
+  x <- x |>
+    dplyr::group_by(Assigned) |> 
+    summarise(geometry = sf::st_combine(geometry)) |> 
+    sf::st_convex_hull() |> 
+    sf::st_difference() |> 
+    sf::st_intersection(focal_grid)
+  
+  # now place points all across the grid to be divided. 
+  pts <- sf::st_sample(focal_grid, 10000) |>
+    sf::st_as_sf()
+  
+  #assign each of the newly generated points to the nearest polygon 
+  # created above. The closest polygon will become the points
+  # identity. 
+  pts$Assigned <- sf::st_drop_geometry(
+    x$Assigned)[ sf::st_nearest_feature(pts, x)] 
+  pts <- pts |>
+    dplyr::group_by(Assigned) |>
+    dplyr::summarise(geometry = sf::st_union(x)) |>
+    sf::st_convex_hull()
+  
+  # these points were cast to polygons, and now we remove overlapping areas
+  all_pts_surface <- sf::st_difference(pts)
+  
+  # we will determine snap and interval distances by drawing points which should land into the remaining slivers. This will remove any major
+  # holes left by the above process. 
+  slivers <- rmapshaper::ms_erase(focal_grid, all_pts_surface)
+  sliver_pts <- sf::st_sample(slivers, size = 250)
+  snap_dist <- ceiling(
+    as.numeric(
+      max(
+        sf::st_distance(
+          sliver_pts, 
+          all_pts_surface[
+            sf::st_nearest_feature(sliver_pts, all_pts_surface),], 
+          by_element = TRUE)
+      )
+    )
+  )
+  
+  # now fill in the gaps across the spatial data set. 
+  all_pts_surface <- rmapshaper::ms_simplify(
+    all_pts_surface,  keep_shapes = TRUE, snap = TRUE,
+    keep = 1, weighting = 0, snap_interval = snap_dist) |>
+    sf::st_difference() |>
+    sf::st_buffer(snap_dist) |>
+    sf::st_difference()
+  
+  # join the target grids onto this output. 
+  final_grids <- neighb_grid |>
+    dplyr::select(Assigned = NAME) |>
+    dplyr::bind_rows(int) |>
+    dplyr::group_by(Assigned) |>
+    dplyr::summarize(geometry = sf::st_union(geometry))
+  
+  # remove small internal holes which may arise from when the
+  # created geometries were joined back to the original grid cells. 
+  final_grids <- nngeo::st_remove_holes(final_grids, max_area = 1000)
+}
 
-r <- terra::rast(focal_grid, nrows = 1000, ncols = 1000)
-X <- terra::init(r, "x")
-Y <- terra::init(r, "y")
-r <- c(X, Y)
-names(r) <- c('X', 'Y')
-out <- terra::predict(r, knn.pred)
-plot(out)
+out <- snapGrids(x = test, neighb_grid, focal_grid)
+
+ggplot() + 
+  geom_sf(data = out)
