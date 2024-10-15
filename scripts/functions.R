@@ -342,27 +342,35 @@ prop_donor_f <- vector(mode = 'list', length = 1)
 deficits_f <- vector(mode = 'list', length = 1)
 prop_areas_f <- vector(mode = 'list', length = 1)
 prop_target_f <- vector(mode = 'list', length = 1)
-deficits_f[[1]] <- c(0, -0.35, -0.2, -0.25)
-prop_areas_f[[1]] <- c(0.4, 0.05, 0.20, 0.25)
-prop_donor_f[[1]] <- 0.1
 
-ob <- -0.25
-ob1 <- -0.25
-ob <= ob1
-all.equal(-0.25, -0.25)
+prop_areas_f[[1]] <- c(0.4, 0.1, 0.1, 0.1)
+prop_donor_f[[1]] <- 0.3
 
-for (i in seq_along(deficits_f)){
-  def_sort <- order(deficits_f[[i]])
-  print(all.equal(deficits_f[[i]][def_sort[2]],(deficits_f[[i]][def_sort[1]]+ prop_donor_f[[i]])))
+# generate an initial calculation of all areas which are not huge. 
+area_sort <- order(prop_areas_f[[i]], decreasing = TRUE)
+area_des <- (sum(prop_areas_f[[i]]) + prop_donor_f[[i]]) / length(prop_areas_f[[i]])
+
+if(all(prop_areas_f[[i]] < area_des)==TRUE){
+  message('boo')
+  prop_target_f[[i]] <- area_des
+  
+} else if(any(prop_areas_f[[i]] > area_des)==TRUE){
+  
+  kp <- prop_areas_f[[i]] < area_des
+  prop_areas_f[[i]][kp]
+  area_des <- (sum(prop_areas_f[[i]][kp]) + prop_donor_f[[i]]) / 
+    length(prop_areas_f[[i]][kp])
 }
+
 
 for (i in seq_along(deficits_f)){
   def_sort <- order(deficits_f[[i]])
   df1 <- deficits_f[[i]][def_sort[1]]; df2 <- deficits_f[[i]][def_sort[2]]
   if(
-    df1 + prop_donor_f[[i]] < df2 | all.equal(df1 + prop_donor_f[[i]], df2) ) {
+    df1 + prop_donor_f[[i]] < df2 | isTRUE(all.equal(df1 + prop_donor_f[[i]], df2))) {
     # this grid is so small it can receive all of the area from the donor and still 
-    # be smaller than the 2nd smallest grid 
+    # be smaller (or equal...) than/to the 2nd smallest grid #/ need to use 
+    # all.equal due to floating point calculations. 
     
     prop_target_f[[i]] <-  # smaller grid. 
       c(prop_donor_f[[i]] + prop_areas_f[[i]][def_sort[1]],
@@ -373,16 +381,43 @@ for (i in seq_along(deficits_f)){
     # the smaller grid will take 100% of the area from the donors until it reaches
     # the size of the next smallest grid. Then the two grids will split the remaining
     # values 50/50 until reaching the size of the third grid. 
-    print('who')
-    df1 - df2 -> give1
-    df2 - deficits_f[[i]][def_sort[3]]/2 -> give1_2 
-    
-  #  prop_target_f[[i]] <-  # smaller grid. 
-  #    c(give1 + prop_areas_f[[i]][which.min(prop_areas_f[[i]])],
-  #      prop_areas_f[[i]][def_sort[2:length(def_sort)]])
-  } else {print('correct')}
 
+    area_sort <- order(prop_areas_f[[i]], decreasing = TRUE)
+    
+    if( sum(prop_areas_f[] + prop_donor_f))
+    prop_target_f[[i]] <-  # smaller grid. 
+      c(give1 + prop_areas_f[[i]][def_sort[1]],
+        prop_areas_f[[i]][def_sort[2:length(def_sort)]])
+    
+  } 
 }
+
+(df2 - deficits_f[[i]][def_sort[3]]) / 2 -> give1_2 
+
+length(def_sort)
+
+give1 + 2*(give1_2) == prop_donor_f
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #' place random points in the polygon which will be dissolved with the larger polygons
 
