@@ -189,7 +189,7 @@ testGridSizes <- function(x){
   gr_smaller <- sf::st_intersection(gr_smaller, target) 
   gr_smaller_area <- as.numeric(sf::st_area(gr_smaller))
   gr_smaller_area <- sort(gr_smaller_area / max(gr_smaller_area) * 100, decreasing = TRUE)[1:20]
-  var_small <- var(gr_smaller_area, na.rm = TRUE)
+  var_smaller <- var(gr_smaller_area, na.rm = TRUE)
   
   # try with smallest grids
   gr_smallest <- sf::st_make_grid(target, n = c(x_start+2, y_start+2), square = FALSE)
@@ -202,51 +202,75 @@ testGridSizes <- function(x){
     Name = c('Smallest', 'Smaller', 'Original',   'Larger', 'Largest'),
     Grids = c(
       length(gr_smallest), length(gr_smaller), 
-      length(gr), length(gr_large), length(gr_largest)), 
+      length(gr), length(gr_larger), length(gr_largest)), 
     Variance = c(var_smallest, var_smaller, var_Original, var_larger, var_largest),
-    GridNOx = c(x_start+2, x_start +1, x_start, x_start-1, x_start-2), 
+    GridNOx = c(x_start+2, x_start+1, x_start, x_start-1, x_start-2), 
     GridNOy = c(y_start+2, y_start+1, y_start, y_start-1, y_start-2)
   )
   return(results)
 }
 
 target <- spData::us_states |> 
-  dplyr::filter(NAME == 'California') |>
+  dplyr::filter(NAME == 'Rhode Island') |>
   sf::st_transform(32615)
 
-testGridSizes(target)
+out <- testGridSizes(target)
+plot(out$Grids, out$Variance)
+abline(v=20, col="blue")
 
-ggplot() + 
-  geom_sf(data = gr)+ 
-  geom_sf(data = gr_large, color = 'green')# + 
-  geom_sf(data = gr_plus, color = 'red', fill = NA)
+# select the grid size within the acceptable range of grid cells which 
+# decrease variance the most. 
 
+# - how do chooose the acceptable number of grids... 
 
 
 # Determine the size of each grid. 
+gr <- sf::st_make_grid(target, n = c(5, 5), square = FALSE) # toy data. 
+gr <- sf::st_intersection(gr, target) 
+gr <- sf::st_collection_extract(gr, 'POLYGON')
 
-gr6 <- st_as_sf(gr6) |> 
-  mutate(Area = as.numeric(st_area(gr6)))
+grid_areas <- sf::st_as_sf(gr) |> 
+  mutate(
+    ID   = 1:dplyr::n(),
+    Area = as.numeric(sf::st_area(gr))
+    )
 
-polys2merge <- arrange(gr6, Area) |>
-  head(n = nrow(gr6) - 20) 
+# order polygons by size, all polygons > 20 will be merged with a neighboring polygon
+indices <- grid_areas$Area >= sort(grid_areas$Area, decreasing = TRUE)[20]
+to_merge_sf <- gr[!indices,]
+merge_into_sf <- gr[indices,] |> st_as_sf()
+# before calculating neighbors, we will union, adjacent polygons which we will 
+# end up merging to the polygons we will keep. This SHOULD allow for better 
+# distribution of there areas into the remaining polygons, making the kept polygons more equal in size. 
+
+gr <- to_merge_sf |> 
+  st_union() |> 
+  st_cast('POLYGON') |> 
+  st_as_sf()  %>% # gotta use pipe to set position of tibbles 
+  bind_rows(
+    gr[indices,] |> st_as_sf(), .
+  )
 
 # Determine neighboring polygons
+neighbors <- spdep::poly2nb(gr, queen = FALSE)[21:nrow(gr)]
 
-neighbors <- spdep::poly2nb(gr6, queen = FALSE)
-coords <- st_coordinates(st_centroid(st_geometry(gr6)))
-plot(st_geometry(gr6), border = "grey")
-plot(neighbors, coords, add = TRUE)
+grid_areas <- sf::st_as_sf(gr) |> 
+  mutate(
+    ID   = 1:dplyr::n(),
+    Area = as.numeric(sf::st_area(gr))
+  )
 
-# order polysgons by size, all polygons > 20 will be merged with a neighboring polygon
-indices <- gr6$Area >= sort(gr6$Area, decreasing = TRUE)[20] 
-gr6_neigh2snap2 <- neighbors[indices]
-gr6_merge_into <- gr6[indices, ]
-
-full_sized_neighbors <- which(gr6$Area / max(gr6$Area) >= 0.975) # consider these to be full sized grids
+full_sized_neighbors <- which(
+  grid_areas$Area[1:20] / max(grid_areas$Area) >= 0.975) 
+# consider these to be full sized grids
 
 # identify neighboring polygons
-gr6_neighs2remove <- neighbors[!indices]
+to_merge_sf <- gr[21:nrow(gr),]
+merge_into_sf <- gr[1:20,] 
+
+ggplot() + 
+  geom_sf(data = to_merge_sf) + 
+  geom_sf(data = merge_into_sf, fill = 'red')
 
 # identify the relative sizes of the neighboring polygons
 size_props <- function(x, data, full_sized_neighbors){
@@ -258,26 +282,26 @@ size_props <- function(x, data, full_sized_neighbors){
     if(length(x_sub > 1)){x <- x_sub} else {x <- x}
   }
   
+  areas <- as.numeric(sf::st_area(data))
   grids <- sf::st_drop_geometry(data)
-  areas <- grids[x, 'Area']
   totalArea <- sum(as.numeric(areas))
   
   # if multiple polygon neighbors exist, determine their sizes relative to each other
-  recs2receive <- totalArea / (as.numeric(areas)) * 10 # percent of records to receive
+  recs2receive <- (as.numeric(areas)) / totalArea * 100 # percent of records to receive
   replace(recs2receive, recs2receive == 10, 100)
+  
+  
+  # which neighbors are relevant to these polys2merge? 
 }
 
 o <- lapply(
   gr6_neighs2remove, 
   FUN = size_props, 
-  data = gr6, 
+  data = st_as_sf(gr), 
   full_sized_neighbors = full_sized_neighbors)
 
 o
-
-
-
-
+sum(o[[12]])
 
 
 
