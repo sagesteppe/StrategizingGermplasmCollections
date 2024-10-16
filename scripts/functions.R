@@ -272,155 +272,56 @@ ggplot() +
   geom_sf(data = to_merge_sf, fill = 'green') + 
   geom_sf(data = merge_into_sf, fill = 'red')
 
+
 area2be_reassigned <- vector(length = length(neighbors))
 areas <- vector(mode = 'list', length = length(neighbors))
-fsn_positions <- vector(mode = 'list', length = length(neighbors))
-area_sub <- vector(mode = 'list', length = length(neighbors))
-full_size_grid <- max(grid_areas$Area) * 0.975
+prop_areas <- vector(mode = 'list', length = length(neighbors))
+prop_donor <- numeric(length = length(neighbors))
+
 for (i in seq_along(neighbors)){
   
   area2be_reassigned[i] <- sf::st_area(to_merge_sf[i,])
   areas[[i]] <- as.numeric(sf::st_area(gr[neighbors[[i]],]))
- 
-  # determine whether we can add area to only smaller  polygons, without touching
-  # the full size grid cells.
-  fsn_positions[[i]] <- which(neighbors[[i]] %in% full_sized_neighbors)
-  if(length(fsn_positions[[i]])>0){
-    area_sub[[i]] <- areas[[i]] [-fsn_positions[[i]]] 
-    area_sub[[i]] <- sum(area_sub[[i]])/length(area_sub[[i]]) + 
-      area2be_reassigned[i] < full_size_grid
-  }
-  # if the area resulting from the combination of the neighboring polygons with the polygons to merge
-  # will be smaller than a full sized grids, remove the full size grids from that set of
-  # neighbors. They will receive no allocated areas. 
-  if(isTRUE(area_sub[[i]]==TRUE)){
-    neighbors[[i]] <- neighbors[[i]][-fsn_positions[[i]]];
-    areas[[i]] <- areas[[i]][-fsn_positions[[i]]];
-    }
+  
+  prop_donor[i] <- area2be_reassigned[i] / (sum(areas[[i]]) + area2be_reassigned[i]) 
+  prop_areas[[i]] <- areas[[i]] / (sum(areas[[i]]) + area2be_reassigned[i]) 
 }
 
+rm(area2be_reassigned)
 
-prop_areas <- vector(mode = 'list', length = length(neighbors))
-prop_donor <- vector(mode = 'list', length = length(neighbors))
-deficits <- vector(mode = 'list', length = length(neighbors))
-prop_target <- vector(mode = 'list', length = length(neighbors))
-for (i in seq_along(neighbors)){
-  # the proportional composition of each existing area
-  prop_areas[[i]] <- areas[[i]] / sum(areas[[i]], area2be_reassigned[[i]]) 
+prop_target <- vector(mode = 'list', length = length(prop_areas))
+area_sort <- vector(mode = 'list', length = length(prop_areas))
+area_des <- vector(mode = 'list', length = length(prop_areas))
+
+# Using the polygons which will be merged, try to make the following polygons
+# as equally sized as possible - without ever removing area from an existing grid. 
+for (i in seq_along(area_sort)){
   
-  # the proportion of the area to be given away
-  prop_donor[[i]] <- area2be_reassigned[[i]] / sum(areas[[i]], area2be_reassigned[[i]]) 
+  area_des <- (sum(prop_areas[[i]]) + prop_donor[i]) / length(prop_areas[[i]])
   
-  # the largest area becomes 0, all other areas have a deficient relative to it. 
-  deficits[[i]] <- prop_areas[[i]] - max(prop_areas[[i]]) 
-  
-  if(prop_donor[[i]] + sum(deficits[[i]]) > 0){ 
-    # in this scenario we have enough area to distribute, that not only will all
-    # of the smaller grids become  as large as the largest grid, the largest 
-    # grid will also receive some area from the surplus
-    # allowing for the simple addition of the surplus area across all grids. 
-    prop_target[[i]] <- rep(max(prop_areas[[i]]), times = length(prop_areas[[i]]))
-    prop_target[[i]] <- prop_target[[i]] + (1 - sum(prop_target[[i]])) / length(prop_areas[[i]])
-  } else if (length(deficits[[i]]) == 0 ) {
-    # The area to be reallocated is connected to a single neighbor, it will get everything. 
-    prop_target[[i]] <- 100
-  } else {
-    # i.e. prop_donor + sum_deficits < 0 # in this scenario we DON'T have enough
-    # area to distribute, we try to make the smallest grids as large as possible. 
+  if(all(prop_areas[[i]] < area_des)==TRUE){
+
+    # these polygons will all be the same size!... roughly... 
+    prop_target[[i]] <- rep(area_des, times = length(prop_areas[[i]]))
     
-    if(length(prop_areas[[i]])==2){ # here we have only two grids, through all area to the
-      prop_target[[i]] <-  # smaller grid. 
-        c(prop_donor[[i]] + prop_areas[[i]][which.min(prop_areas[[i]])],
-          prop_areas[[i]][which.max(prop_areas[[i]])])
-    } else { # effectively length >= 3 small grids. 
-      
-    }
+  } else if(any(prop_areas[[i]] > area_des)==TRUE){
+    
+    prop_target[[i]] <- numeric(length(prop_areas[[i]]))
+    kp <- prop_areas[[i]] < area_des # determine which grids are to big
+    area_des <- (sum(prop_areas[[i]][kp]) + prop_donor[i]) / 
+      length(prop_areas[[i]][kp])
+    
+    # make grids smaller than the goal threshold size the threshold, 
+    # return grids larger than the threshold size as they are. 
+    prop_target[[i]][kp] <- area_des
+    prop_target[[i]][-kp] <-prop_areas[[i]][-kp]
   }
 }
 
-prop_donor_f <- vector(mode = 'list', length = 1)
-deficits_f <- vector(mode = 'list', length = 1)
-prop_areas_f <- vector(mode = 'list', length = 1)
-prop_target_f <- vector(mode = 'list', length = 1)
-
-prop_areas_f[[1]] <- c(0.4, 0.1, 0.1, 0.1)
-prop_donor_f[[1]] <- 0.3
-
-# generate an initial calculation of all areas which are not huge. 
-area_sort <- order(prop_areas_f[[i]], decreasing = TRUE)
-area_des <- (sum(prop_areas_f[[i]]) + prop_donor_f[[i]]) / length(prop_areas_f[[i]])
-
-if(all(prop_areas_f[[i]] < area_des)==TRUE){
-  message('boo')
-  prop_target_f[[i]] <- area_des
-  
-} else if(any(prop_areas_f[[i]] > area_des)==TRUE){
-  
-  kp <- prop_areas_f[[i]] < area_des
-  prop_areas_f[[i]][kp]
-  area_des <- (sum(prop_areas_f[[i]][kp]) + prop_donor_f[[i]]) / 
-    length(prop_areas_f[[i]][kp])
-}
-
-
-for (i in seq_along(deficits_f)){
-  def_sort <- order(deficits_f[[i]])
-  df1 <- deficits_f[[i]][def_sort[1]]; df2 <- deficits_f[[i]][def_sort[2]]
-  if(
-    df1 + prop_donor_f[[i]] < df2 | isTRUE(all.equal(df1 + prop_donor_f[[i]], df2))) {
-    # this grid is so small it can receive all of the area from the donor and still 
-    # be smaller (or equal...) than/to the 2nd smallest grid #/ need to use 
-    # all.equal due to floating point calculations. 
-    
-    prop_target_f[[i]] <-  # smaller grid. 
-      c(prop_donor_f[[i]] + prop_areas_f[[i]][def_sort[1]],
-        prop_areas_f[[i]][ def_sort[2:length(def_sort)] ])
-    
-  } else if (
-    df1 + prop_donor_f[[i]] > df2) {
-    # the smaller grid will take 100% of the area from the donors until it reaches
-    # the size of the next smallest grid. Then the two grids will split the remaining
-    # values 50/50 until reaching the size of the third grid. 
-
-    area_sort <- order(prop_areas_f[[i]], decreasing = TRUE)
-    
-    if( sum(prop_areas_f[] + prop_donor_f))
-    prop_target_f[[i]] <-  # smaller grid. 
-      c(give1 + prop_areas_f[[i]][def_sort[1]],
-        prop_areas_f[[i]][def_sort[2:length(def_sort)]])
-    
-  } 
-}
-
-(df2 - deficits_f[[i]][def_sort[3]]) / 2 -> give1_2 
-
-length(def_sort)
-
-give1 + 2*(give1_2) == prop_donor_f
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+rm(area_des, area_sort, i, prop_donor)
 
 
 #' place random points in the polygon which will be dissolved with the larger polygons
-
 assignGrid_pts <- function(neighb_grid, focal_grid){
   
   # Ensure that we are only working on a grid with 100 points
@@ -658,3 +559,81 @@ out <- snapGrids(x = test, neighb_grid, focal_grid)
 
 ggplot() + 
   geom_sf(data = out)
+
+
+
+
+
+
+
+
+
+# the below is probably rubbish!
+
+
+area2be_reassigned <- vector(length = length(neighbors))
+areas <- vector(mode = 'list', length = length(neighbors))
+fsn_positions <- vector(mode = 'list', length = length(neighbors))
+area_sub <- vector(mode = 'list', length = length(neighbors))
+full_size_grid <- max(grid_areas$Area) * 0.975
+for (i in seq_along(neighbors)){
+  
+  area2be_reassigned[i] <- sf::st_area(to_merge_sf[i,])
+  areas[[i]] <- as.numeric(sf::st_area(gr[neighbors[[i]],]))
+  
+  # determine whether we can add area to only smaller  polygons, without touching
+  # the full size grid cells.
+  fsn_positions[[i]] <- which(neighbors[[i]] %in% full_sized_neighbors)
+  if(length(fsn_positions[[i]])>0){
+    area_sub[[i]] <- areas[[i]] [-fsn_positions[[i]]] 
+    area_sub[[i]] <- sum(area_sub[[i]])/length(area_sub[[i]]) + 
+      area2be_reassigned[i] < full_size_grid
+  }
+  # if the area resulting from the combination of the neighboring polygons with the polygons to merge
+  # will be smaller than a full sized grids, remove the full size grids from that set of
+  # neighbors. They will receive no allocated areas. 
+  if(isTRUE(area_sub[[i]]==TRUE)){
+    neighbors[[i]] <- neighbors[[i]][-fsn_positions[[i]]];
+    areas[[i]] <- areas[[i]][-fsn_positions[[i]]];
+  }
+}
+
+
+prop_areas <- vector(mode = 'list', length = length(neighbors))
+prop_donor <- vector(mode = 'list', length = length(neighbors))
+deficits <- vector(mode = 'list', length = length(neighbors))
+prop_target <- vector(mode = 'list', length = length(neighbors))
+for (i in seq_along(neighbors)){
+  # the proportional composition of each existing area
+  prop_areas[[i]] <- areas[[i]] / sum(areas[[i]], area2be_reassigned[[i]]) 
+  
+  # the proportion of the area to be given away
+  prop_donor[[i]] <- area2be_reassigned[[i]] / sum(areas[[i]], area2be_reassigned[[i]]) 
+  
+  # the largest area becomes 0, all other areas have a deficient relative to it. 
+  deficits[[i]] <- prop_areas[[i]] - max(prop_areas[[i]]) 
+  
+  if(prop_donor[[i]] + sum(deficits[[i]]) > 0){ 
+    # in this scenario we have enough area to distribute, that not only will all
+    # of the smaller grids become  as large as the largest grid, the largest 
+    # grid will also receive some area from the surplus
+    # allowing for the simple addition of the surplus area across all grids. 
+    prop_target[[i]] <- rep(max(prop_areas[[i]]), times = length(prop_areas[[i]]))
+    prop_target[[i]] <- prop_target[[i]] + (1 - sum(prop_target[[i]])) / length(prop_areas[[i]])
+  } else if (length(deficits[[i]]) == 0 ) {
+    # The area to be reallocated is connected to a single neighbor, it will get everything. 
+    prop_target[[i]] <- 100
+  } else {
+    # i.e. prop_donor + sum_deficits < 0 # in this scenario we DON'T have enough
+    # area to distribute, we try to make the smallest grids as large as possible. 
+    
+    if(length(prop_areas[[i]])==2){ # here we have only two grids, throw all area to the
+      prop_target[[i]] <-  # smaller grid. 
+        c(prop_donor[[i]] + prop_areas[[i]][which.min(prop_areas[[i]])],
+          prop_areas[[i]][which.max(prop_areas[[i]])])
+    } else { # effectively length >= 3 small grids. 
+      
+    }
+  }
+}
+
