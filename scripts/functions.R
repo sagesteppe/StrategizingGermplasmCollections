@@ -216,8 +216,6 @@ target <- spData::us_states |>
   sf::st_transform(32615)
 
 out <- testGridSizes(target)
-plot(out$Grids, out$Variance)
-abline(v=20, col="blue")
 
 # select the grid size within the acceptable range of grid cells which 
 # decrease variance the most. 
@@ -332,6 +330,34 @@ for (i in seq_along(area_sort)){
 
 rm(area_des, area_sort, i, prop_donor, prop_target, areas)
 
+gr <- dplyr::mutate(gr, ID = 1:dplyr::n(),  .before = x) |>
+  dplyr::rename(geometry = x)
+neighb_grid <- vector(mode = 'list', length = length(prop_areas))
+for (i in seq_along(neighbors)){
+  neighb_grid[[i]] <- gr[neighbors[[i]], ]
+}
+
+
+assign_pts_frst <- function(x, props, nf_pct){
+  
+  # ensure these are in the same order. so we can match by position
+  # in the loop. 
+  need_most2least <- names(sort(nf_pct - props))
+  props <- props[need_most2least]
+  x <- x[,need_most2least]
+  
+  x$Assignment  <- NA; x$ID <- 1:nrow(x)
+  for(i in 1:length(props)){
+    
+    # we assign the grids to the neediest grids first, and then work back 
+    # removing these points so they are not overwritten. 
+    x_sub <- x[is.na(x$Assignment),]
+    indices <- x_sub[sort(x_sub[,i], index.return = TRUE)$ix [1:props[i]],'ID']
+    x[indices, 'Assignment'] <- names(props)[i]
+  }
+  return(x)
+}
+
 #' place random points in the polygon which will be dissolved with the larger polygons
 assignGrid_pts <- function(neighb_grid, focal_grid, props, nf_pct){
   
@@ -356,7 +382,7 @@ assignGrid_pts <- function(neighb_grid, focal_grid, props, nf_pct){
   # we use these to determine what are the 'neediest' neighbors and assign them 
   # points first 
   pts$nf <- sf::st_nearest_feature(pts, neighb_grid) 
-  pts$nf <- sf::st_drop_geometry(neighb_grid)[pts$nf,'NAME']
+  pts$nf <- sf::st_drop_geometry(neighb_grid)[pts$nf,'ID']
   
   # each grid now receives either the maximum number of nearest neighbors if
   # the desired proportion is lower than the existing nearest neighbors, 
@@ -364,31 +390,11 @@ assignGrid_pts <- function(neighb_grid, focal_grid, props, nf_pct){
   
   dists <- sf::st_distance(pts, neighb_grid)
   dists <- data.frame(apply(dists, 2, as.numeric))
-  colnames(dists) <- neighb_grid$NAME
-  
-  assign_pts_frst <- function(x, props, nf_pct){
-    
-    # ensure these are in the same order. so we can match by position
-    # in the loop. 
-    need_most2least <- names(sort(nf_pct - props))
-    props <- props[need_most2least]
-    x <- x[,need_most2least]
-    
-    x$Assignment  <- NA; x$ID <- 1:nrow(x)
-    for(i in 1:length(props)){
-      
-      # we assign the grids to the neediest grids first, and then work back 
-      # removing these points so they are not overwritten. 
-      x_sub <- x[is.na(x$Assignment),]
-      indices <- x_sub[sort(x_sub[,i], index.return = TRUE)$ix [1:props[i]],'ID']
-      x[indices, 'Assignment'] <- names(props)[i]
-    }
-    return(x)
-  }
+  colnames(dists) <- neighb_grid$ID
   
   # if only one grid remains, assign all remaining points to it. 
   frst_assignments <- assign_pts_frst(dists, props = props, nf_pct)
-  pts$Assigned <- frst_assignments$Assignment
+  if(exists('frst_assignments')){pts$Assigned <- frst_assignments$Assignment}
   rm(nf_pct, dists)
   
   if(any(is.na(frst_assignments$Assignment))){
@@ -430,12 +436,14 @@ assignGrid_pts <- function(neighb_grid, focal_grid, props, nf_pct){
           )
         ) 
     }
+    
     pts <- dplyr::filter(pts, ! ID %in% needAssigned$ID) |>
+      dplyr::rename(geometry = x) |>
       dplyr::bind_rows(needAssigned) |>
       dplyr::select(Assigned, ID, geometry = x)
   }
-  
-  if(exists('needAssigned')){rm(frst_assignments)}
+  pts <- pts[! sf::st_is_empty(pts), ]
+
   # Determine if there are points which are 'disconnected' from their remaining neighbors
   nn <- spdep::knearneigh(pts, k=4)[['nn']]
   
@@ -468,28 +476,27 @@ assignGrid_pts <- function(neighb_grid, focal_grid, props, nf_pct){
     }
   }
   
+  lkup <- c(geometry = "x")
   
   pts <- pts |>
-    dplyr::select(Assigned, geometry = x)
+    dplyr::rename(dplyr::any_of(lkup)) |>
+    dplyr::select(Assigned, geometry)
   return(pts)
 }
 
-neighb_grid <- spData::us_states |> 
-  dplyr::filter(
-    NAME %in% 
-      c('California', 'Oregon', 'Idaho', 'Utah',  'Arizona')) |>
-  sf::st_transform(32617)
-
-focal_grid <- spData::us_states |>
-  filter(NAME == 'Nevada')|>
-  sf::st_transform(32617)
-
+to_merge_sf <- dplyr::rename(to_merge_sf, geometry = x)
 to_merge_sf <- split(to_merge_sf, f = 1:nrow(to_merge_sf))
-test <- assignGrid_pts(
-  neighb_grid = neighbors, 
-  focal_grid = to_merge_sf, 
-  props = props, 
-  nf_pct = nf_pct)
+
+out <- vector(mode = 'list', length = length(prop_areas))
+for (i in seq_along(out)){
+  out[[i]] <- assignGrid_pts(
+    neighb_grid =  neighb_grid[[i]], 
+    focal_grid = to_merge_sf[[i]], 
+    props = props[[i]], 
+    nf_pct = nf_pct[[i]]
+  )
+}
+
 
 #' turn the point grid suggestions made by assignGrid_pts into polygons
 #' 
