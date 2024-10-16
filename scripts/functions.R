@@ -148,7 +148,7 @@ library(spData)
 #' @param x a species range. 
 testGridSizes <- function(x){
   
-  bound <- st_bbox(target)
+  bound <- sf::st_bbox(target)
   x_dist <- bound['xmax'] - bound['xmin']
   y_dist <- bound['ymax'] - bound['ymin']
   
@@ -220,7 +220,7 @@ out <- testGridSizes(target)
 # select the grid size within the acceptable range of grid cells which 
 # decrease variance the most. 
 
-# - how do chooose the acceptable number of grids... 
+# - how do choose the acceptable number of grids... 
 
 library(sf)
 library(tidyverse)
@@ -266,11 +266,6 @@ full_sized_neighbors <- which( # consider these to be full sized grids
 # identify neighboring polygons
 to_merge_sf <- gr[21:nrow(gr),]
 merge_into_sf <- gr[1:20,] 
-
-ggplot() + 
-  geom_sf(data = to_merge_sf, fill = 'green') + 
-  geom_sf(data = merge_into_sf, fill = 'red')
-
 
 area2be_reassigned <- vector(length = length(neighbors))
 areas <- vector(mode = 'list', length = length(neighbors))
@@ -480,7 +475,8 @@ assignGrid_pts <- function(neighb_grid, focal_grid, props, nf_pct){
   
   pts <- pts |>
     dplyr::rename(dplyr::any_of(lkup)) |>
-    dplyr::select(Assigned, geometry)
+    dplyr::select(Assigned, geometry) |>
+    dplyr::mutate(Assigned = as.numeric(Assigned))
   return(pts)
 }
 
@@ -508,17 +504,26 @@ snapGrids <- function(x, neighb_grid, focal_grid){
   
   # combine the output of `assignGrid_pts` together and create a small
   # polygon around there extent. 
+  
+  sf::st_agr(focal_grid) = "constant"
+  sf::st_agr(x) = "constant"
+  sf::st_agr(neighb_grid) = "constant"
+  
+  focal_grid <- sf::st_make_valid(focal_grid)
+  neighb_grid <- sf::st_make_valid(neighb_grid)
+  
   x <- x |>
     dplyr::group_by(Assigned) |> 
-    summarise(geometry = sf::st_combine(geometry)) |> 
-    sf::st_convex_hull() |> 
+    dplyr::summarise(geometry = sf::st_combine(geometry)) |> 
+    sf::st_concave_hull(ratio = 0.01) |> 
     sf::st_difference() |> 
+    sf::st_make_valid() |>
     sf::st_intersection(focal_grid)
   
   # now place points all across the grid to be divided. 
   pts <- sf::st_sample(focal_grid, 10000) |>
     sf::st_as_sf()
-  
+  sf::st_agr(pts) = "constant"
   #assign each of the newly generated points to the nearest polygon 
   # created above. The closest polygon will become the points
   # identity. 
@@ -531,6 +536,7 @@ snapGrids <- function(x, neighb_grid, focal_grid){
   
   # these points were cast to polygons, and now we remove overlapping areas
   all_pts_surface <- sf::st_difference(pts)
+  sf::st_agr(all_pts_surface) = "constant"
   
   # we will determine snap and interval distances by drawing points which should land into the remaining slivers. This will remove any major
   # holes left by the above process. 
@@ -546,29 +552,246 @@ snapGrids <- function(x, neighb_grid, focal_grid){
           by_element = TRUE)
       )
     )
-  )
+  ) + 1
   
   # now fill in the gaps across the spatial data set. 
   all_pts_surface <- rmapshaper::ms_simplify(
-    all_pts_surface,  keep_shapes = TRUE, snap = TRUE,
-    keep = 1, weighting = 0, snap_interval = snap_dist) |>
+      all_pts_surface,  keep_shapes = TRUE, snap = TRUE,
+      keep = 1, weighting = 0, snap_interval = snap_dist) |>
+    sf::st_make_valid() |>
     sf::st_difference() |>
     sf::st_buffer(snap_dist) |>
     sf::st_difference()
   
+  all_pts_surface <- sf::st_difference(
+    all_pts_surface,  sf::st_union(sf::st_combine(neighb_grid))
+    ) |>
+    sf::st_make_valid()
+  
   # join the target grids onto this output. 
-  final_grids <- neighb_grid |>
-    dplyr::select(Assigned = NAME) |>
-    dplyr::bind_rows(int) |>
-    dplyr::group_by(Assigned) |>
-    dplyr::summarize(geometry = sf::st_union(geometry))
+  final_grids <- neighb_grid |> 
+    dplyr::select(Assigned = ID) |> 
+    dplyr::bind_rows(all_pts_surface) |> 
+    dplyr::group_by(Assigned) |> 
+    dplyr::summarize(geometry = sf::st_union(geometry)) |> 
+    sf::st_make_valid()
   
   # remove small internal holes which may arise from when the
   # created geometries were joined back to the original grid cells. 
   final_grids <- nngeo::st_remove_holes(final_grids, max_area = 1000)
+
+  # now we determine which MULTIPOLYGONS are touching - if two polygons are contiguous, than we want to convert them to a single 
+  # polygon. These exist because of very minor/short distance between
+  # the existing polygons. 
+  healPolygons <- function(x){
+    
+    healR <- function(x){
+      Assigned <- x$Assigned
+      sf::st_agr(x) = "constant" 
+      x <- x |> sf::st_buffer(0.0001) |> 
+        sf::st_union() |> 
+        sf::st_combine() |>
+        sf::st_as_sf() |> 
+        dplyr::mutate(Assigned = Assigned) |> 
+        dplyr::rename(geometry = x) 
+      return(x)
+    }
+    
+    rows <- split(x, f = 1:nrow(x))
+    rows <- lapply(rows, healR)
+    rows <- dplyr::bind_rows(rows)
+
+  } 
+  
+  final_grids <- healPolygons(final_grids)
 }
 
-out <- snapGrids(x = test, neighb_grid, focal_grid)
+final <- vector(mode = 'list', length = length(out))
+for (i in seq_along(final)){
+  final[[i]] <- snapGrids(
+    x = out[[i]],
+    neighb_grid =  neighb_grid[[i]], 
+    focal_grid = to_merge_sf[[i]]
+  )
+} 
 
-ggplot() + 
-  geom_sf(data = out)
+final_grids <- bind_rows(final)
+
+snapR <- function(x){
+  Assigned <- sf::st_drop_geometry(x$Assigned)[1]
+  x <- sf::st_snap(x = x, y = x, tolerance = 0.0001)|>
+    sf::st_union() |>
+    sf::st_as_sf() |> 
+    dplyr::mutate(Assigned = Assigned) |> 
+    dplyr::rename(geometry = x) 
+  return(x)
+}
+
+  
+#' Create hexagonal grid based polygons over a geographic range
+#' 
+#' This function creates 20 grid cells over a geographic area (`x`), typically a species
+#' range.  
+#' @param x An SF object or terra spatraster. the range over which to generate the clusters.
+#' @param projection Numeric. An EPSG code for a planar coordinate projection, in meters, for use with the function. For species with very narrow ranges a UTM zone may be best (e.g. 32611 for WGS84 zone 11 north, or 29611 for NAD83 zone 11 north). Otherwise a continental scale projection like 5463. See LINK for more information on CRS.
+GridBasedSample <- function(x){
+  
+  # order polygons by size, all polygons > 20 will be merged with a neighboring polygon
+  indices <- grid_areas$Area >= sort(grid_areas$Area, decreasing = TRUE)[20]
+  to_merge_sf <- gr[!indices,]
+  merge_into_sf <- gr[indices,] |> sf::st_as_sf()
+  # before calculating neighbors, we will union, adjacent polygons which we will 
+  # end up merging to the polygons we will keep. This SHOULD allow for better 
+  # distribution of there areas into the remaining polygons, making the kept polygons more equal in size. 
+  
+  gr <- to_merge_sf |> 
+    sf::st_union() |> 
+    sf::st_cast('POLYGON') |> 
+    sf::st_as_sf()  %>% # gotta use pipe to set position of tibbles 
+    dplyr::bind_rows(
+      gr[indices,] |> sf::st_as_sf(), .
+    )
+  
+  # Determine neighboring polygons
+  neighbors <- spdep::poly2nb(gr, queen = FALSE)[21:nrow(gr)]
+  
+  grid_areas <- sf::st_as_sf(gr) |> 
+    mutate(
+      ID   = 1:dplyr::n(),
+      Area = as.numeric(sf::st_area(gr))
+    )
+  
+  full_sized_neighbors <- which( # consider these to be full sized grids
+    grid_areas$Area[1:20] / max(grid_areas$Area) >= 0.975) 
+  
+  # identify neighboring polygons
+  to_merge_sf <- gr[21:nrow(gr),]
+  merge_into_sf <- gr[1:20,] 
+  
+  ggplot() + 
+    geom_sf(data = to_merge_sf, fill = 'green') + 
+    geom_sf(data = merge_into_sf, fill = 'red')
+  
+  
+  area2be_reassigned <- vector(length = length(neighbors))
+  areas <- vector(mode = 'list', length = length(neighbors))
+  prop_areas <- vector(mode = 'list', length = length(neighbors))
+  prop_donor <- numeric(length = length(neighbors))
+  
+  for (i in seq_along(neighbors)){
+    
+    area2be_reassigned[i] <- sf::st_area(to_merge_sf[i,])
+    areas[[i]] <- as.numeric(sf::st_area(gr[neighbors[[i]],]))
+    
+    prop_donor[i] <- area2be_reassigned[i] / (sum(areas[[i]]) + area2be_reassigned[i]) 
+    prop_areas[[i]] <- areas[[i]] / (sum(areas[[i]]) + area2be_reassigned[i]) 
+  }
+  
+  
+  area2be_reassigned <- vector(length = length(neighbors))
+  areas <- vector(mode = 'list', length = length(neighbors))
+  prop_areas <- vector(mode = 'list', length = length(neighbors))
+  prop_donor <- numeric(length = length(neighbors))
+  
+  for (i in seq_along(neighbors)){
+    
+    area2be_reassigned[i] <- sf::st_area(to_merge_sf[i,])
+    areas[[i]] <- as.numeric(sf::st_area(gr[neighbors[[i]],]))
+    
+    prop_donor[i] <- area2be_reassigned[i] / (sum(areas[[i]]) + area2be_reassigned[i]) 
+    prop_areas[[i]] <- areas[[i]] / (sum(areas[[i]]) + area2be_reassigned[i]) 
+  }
+  
+  rm(area2be_reassigned)
+  
+  prop_target <- vector(mode = 'list', length = length(prop_areas))
+  area_sort <- vector(mode = 'list', length = length(prop_areas))
+  area_des <- vector(mode = 'list', length = length(prop_areas))
+  nf_pct <- vector(mode = 'list', length = length(prop_areas))
+  props <- vector(mode = 'list', length = length(prop_areas))
+  # Using the polygons which will be merged, try to make the following polygons
+  # as equally sized as possible - without ever removing area from an existing grid. 
+  for (i in seq_along(area_sort)){
+    
+    area_des <- (sum(prop_areas[[i]]) + prop_donor[i]) / length(prop_areas[[i]])
+    
+    if(all(prop_areas[[i]] < area_des)==TRUE){
+      
+      # these polygons will all be the same size!... roughly... 
+      prop_target[[i]] <- rep(area_des, times = length(prop_areas[[i]]))
+      
+    } else if(any(prop_areas[[i]] > area_des)==TRUE){
+      
+      prop_target[[i]] <- numeric(length(prop_areas[[i]]))
+      kp <- prop_areas[[i]] < area_des # determine which grids are to big
+      area_des <- (sum(prop_areas[[i]][kp]) + prop_donor[i]) / 
+        length(prop_areas[[i]][kp])
+      
+      # make grids smaller than the goal threshold size the threshold, 
+      # return grids larger than the threshold size as they are. 
+      prop_target[[i]][kp] <- area_des
+      prop_target[[i]][-kp] <-prop_areas[[i]][-kp]
+    }
+    
+    nf_pct[[i]] <- setNames( # the existing cover for each grid. 
+      prop_areas[[i]] * 100, 
+      neighbors[[i]]
+    )
+    
+    props[[i]] <- setNames( # the desired cover for each grid 
+      prop_target[[i]] * 100, 
+      neighbors[[i]]
+    )
+  }
+  
+  rm(area_des, area_sort, i, prop_donor, prop_target, areas)
+  
+  gr <- dplyr::mutate(gr, ID = 1:dplyr::n(),  .before = x) |>
+    dplyr::rename(geometry = x)
+  neighb_grid <- vector(mode = 'list', length = length(prop_areas))
+  for (i in seq_along(neighbors)){
+    neighb_grid[[i]] <- gr[neighbors[[i]], ]
+  }
+  
+  # place points throughout the grids which need to be merged to determine
+  # how they will be reallocated into larger grids. 
+  to_merge_sf <- dplyr::rename(to_merge_sf, geometry = x)
+  to_merge_sf <- split(to_merge_sf, f = 1:nrow(to_merge_sf))
+  
+  out <- vector(mode = 'list', length = length(prop_areas))
+  for (i in seq_along(out)){
+    out[[i]] <- assignGrid_pts(
+      neighb_grid =  neighb_grid[[i]], 
+      focal_grid = to_merge_sf[[i]], 
+      props = props[[i]], 
+      nf_pct = nf_pct[[i]]
+    )
+  }
+  
+  # finally create polygons from the point samples
+  final <- vector(mode = 'list', length = length(out))
+  for (i in seq_along(final)){
+    final[[i]] <- snapGrids(
+      x = out[[i]],
+      neighb_grid =  neighb_grid[[i]], 
+      focal_grid = to_merge_sf[[i]]
+    )
+  } 
+  final_grids <- dplyr::bind_rows(final)
+  
+  groups <- split(final_grids, f = final_grids$Assigned)
+  final_grids <- lapply(groups, snapR) |> bind_rows()
+  final_grids <- sf::st_make_valid(final_grids)
+  
+  # reconstitute all original input grids, i.e. those without neighbors, 
+  # with all reassigned grids. 
+  gr2 <- sf::st_difference(
+    gr,  sf::st_union(sf::st_combine(final_grids))
+  ) |>
+    sf::st_make_valid()
+  final_grids <- gr2 |>
+    dplyr::rename(Assigned = ID) |>
+    dplyr::bind_rows(final_grids) 
+  
+  return(final_grids)
+}
