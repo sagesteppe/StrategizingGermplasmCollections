@@ -89,10 +89,11 @@ GridSample <- function(x){
 #' Design additional collections around already existing collections
 
 
-
+library(sf)
+library(tidyverse)
 nc <- sf::st_read(system.file("shape/nc.shp", package="sf")) |>
   dplyr::select(NAME) |>
-  st_transform(32617)
+  sf::st_transform(32617)
 set.seed(41)
 existing_collections <- nc[sample(5),] |>
   sf::st_point_on_surface()
@@ -102,11 +103,11 @@ ggplot() +
   geom_sf(data = zones, alpha = 0.5) + 
   geom_sf(data = kmeans_centers)
 
-zones <- st_voronoi(st_union(existing_collections), st_union(nc)) |>
-  st_collection_extract(type = "POLYGON") |> 
-  st_sf() |> 
-  st_intersection(st_union(nc)) 
-zones <- st_intersection(zones, st_union(nc))
+zones <- sf::st_voronoi(st_union(existing_collections), st_union(nc)) |>
+  sf::st_collection_extract(type = "POLYGON") |> 
+  sf::st_sf() |> 
+  sf::st_intersection(st_union(nc)) 
+zones <- sf::st_intersection(zones, sf::st_union(nc))
 
 
 reg_pts <- sf::st_sample(nc, size = 500, type = 'regular', by_polygon = F) |>
@@ -292,7 +293,8 @@ rm(area2be_reassigned)
 prop_target <- vector(mode = 'list', length = length(prop_areas))
 area_sort <- vector(mode = 'list', length = length(prop_areas))
 area_des <- vector(mode = 'list', length = length(prop_areas))
-
+nf_pct <- vector(mode = 'list', length = length(prop_areas))
+props <- vector(mode = 'list', length = length(prop_areas))
 # Using the polygons which will be merged, try to make the following polygons
 # as equally sized as possible - without ever removing area from an existing grid. 
 for (i in seq_along(area_sort)){
@@ -316,13 +318,22 @@ for (i in seq_along(area_sort)){
     prop_target[[i]][kp] <- area_des
     prop_target[[i]][-kp] <-prop_areas[[i]][-kp]
   }
+  
+  nf_pct[[i]] <- setNames( # the existing cover for each grid. 
+    prop_areas[[i]] * 100, 
+    neighbors[[i]]
+  )
+  
+  props[[i]] <- setNames( # the desired cover for each grid 
+    prop_target[[i]] * 100, 
+    neighbors[[i]]
+  )
 }
 
-rm(area_des, area_sort, i, prop_donor)
-
+rm(area_des, area_sort, i, prop_donor, prop_target, areas)
 
 #' place random points in the polygon which will be dissolved with the larger polygons
-assignGrid_pts <- function(neighb_grid, focal_grid){
+assignGrid_pts <- function(neighb_grid, focal_grid, props, nf_pct){
   
   # Ensure that we are only working on a grid with 100 points
   pts <- sf::st_sample(focal_grid, size = 100, type = 'regular') |>
@@ -346,16 +357,6 @@ assignGrid_pts <- function(neighb_grid, focal_grid){
   # points first 
   pts$nf <- sf::st_nearest_feature(pts, neighb_grid) 
   pts$nf <- sf::st_drop_geometry(neighb_grid)[pts$nf,'NAME']
-  
-  nf_pct <- setNames(
-    as.numeric(table(pts$nf)) / nrow(pts) * 100, 
-    names(table(pts$nf))
-  )
-  
-  props <- setNames( # dummy data, real data should come from 
-    c(20, 20, 20, 20, 20), 
-    names(nf_pct)
-  )
   
   # each grid now receives either the maximum number of nearest neighbors if
   # the desired proportion is lower than the existing nearest neighbors, 
@@ -408,7 +409,7 @@ assignGrid_pts <- function(neighb_grid, focal_grid){
   }
   
   rm(frst_assignments)
-  # points are likely to remain in the center of the object. 
+  # a few points may remain in the center of the object. 
   # We will now try to assign all of these to the groups which do
   # have not yet come close to adequate representation. 
   
@@ -483,7 +484,12 @@ focal_grid <- spData::us_states |>
   filter(NAME == 'Nevada')|>
   sf::st_transform(32617)
 
-test <- assignGrid_pts(neighb_grid, focal_grid)
+to_merge_sf <- split(to_merge_sf, f = 1:nrow(to_merge_sf))
+test <- assignGrid_pts(
+  neighb_grid = neighbors, 
+  focal_grid = to_merge_sf, 
+  props = props, 
+  nf_pct = nf_pct)
 
 #' turn the point grid suggestions made by assignGrid_pts into polygons
 #' 
@@ -559,81 +565,3 @@ out <- snapGrids(x = test, neighb_grid, focal_grid)
 
 ggplot() + 
   geom_sf(data = out)
-
-
-
-
-
-
-
-
-
-# the below is probably rubbish!
-
-
-area2be_reassigned <- vector(length = length(neighbors))
-areas <- vector(mode = 'list', length = length(neighbors))
-fsn_positions <- vector(mode = 'list', length = length(neighbors))
-area_sub <- vector(mode = 'list', length = length(neighbors))
-full_size_grid <- max(grid_areas$Area) * 0.975
-for (i in seq_along(neighbors)){
-  
-  area2be_reassigned[i] <- sf::st_area(to_merge_sf[i,])
-  areas[[i]] <- as.numeric(sf::st_area(gr[neighbors[[i]],]))
-  
-  # determine whether we can add area to only smaller  polygons, without touching
-  # the full size grid cells.
-  fsn_positions[[i]] <- which(neighbors[[i]] %in% full_sized_neighbors)
-  if(length(fsn_positions[[i]])>0){
-    area_sub[[i]] <- areas[[i]] [-fsn_positions[[i]]] 
-    area_sub[[i]] <- sum(area_sub[[i]])/length(area_sub[[i]]) + 
-      area2be_reassigned[i] < full_size_grid
-  }
-  # if the area resulting from the combination of the neighboring polygons with the polygons to merge
-  # will be smaller than a full sized grids, remove the full size grids from that set of
-  # neighbors. They will receive no allocated areas. 
-  if(isTRUE(area_sub[[i]]==TRUE)){
-    neighbors[[i]] <- neighbors[[i]][-fsn_positions[[i]]];
-    areas[[i]] <- areas[[i]][-fsn_positions[[i]]];
-  }
-}
-
-
-prop_areas <- vector(mode = 'list', length = length(neighbors))
-prop_donor <- vector(mode = 'list', length = length(neighbors))
-deficits <- vector(mode = 'list', length = length(neighbors))
-prop_target <- vector(mode = 'list', length = length(neighbors))
-for (i in seq_along(neighbors)){
-  # the proportional composition of each existing area
-  prop_areas[[i]] <- areas[[i]] / sum(areas[[i]], area2be_reassigned[[i]]) 
-  
-  # the proportion of the area to be given away
-  prop_donor[[i]] <- area2be_reassigned[[i]] / sum(areas[[i]], area2be_reassigned[[i]]) 
-  
-  # the largest area becomes 0, all other areas have a deficient relative to it. 
-  deficits[[i]] <- prop_areas[[i]] - max(prop_areas[[i]]) 
-  
-  if(prop_donor[[i]] + sum(deficits[[i]]) > 0){ 
-    # in this scenario we have enough area to distribute, that not only will all
-    # of the smaller grids become  as large as the largest grid, the largest 
-    # grid will also receive some area from the surplus
-    # allowing for the simple addition of the surplus area across all grids. 
-    prop_target[[i]] <- rep(max(prop_areas[[i]]), times = length(prop_areas[[i]]))
-    prop_target[[i]] <- prop_target[[i]] + (1 - sum(prop_target[[i]])) / length(prop_areas[[i]])
-  } else if (length(deficits[[i]]) == 0 ) {
-    # The area to be reallocated is connected to a single neighbor, it will get everything. 
-    prop_target[[i]] <- 100
-  } else {
-    # i.e. prop_donor + sum_deficits < 0 # in this scenario we DON'T have enough
-    # area to distribute, we try to make the smallest grids as large as possible. 
-    
-    if(length(prop_areas[[i]])==2){ # here we have only two grids, throw all area to the
-      prop_target[[i]] <-  # smaller grid. 
-        c(prop_donor[[i]] + prop_areas[[i]][which.min(prop_areas[[i]])],
-          prop_areas[[i]][which.max(prop_areas[[i]])])
-    } else { # effectively length >= 3 small grids. 
-      
-    }
-  }
-}
-
