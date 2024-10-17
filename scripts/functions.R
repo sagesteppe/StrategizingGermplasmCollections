@@ -146,14 +146,14 @@ assignGrid_pts <- function(neighb_grid, focal_grid, props, nf_pct){
 
 ##################################### SAND BOX ###############################
 
-
-target <- spData::us_states |> 
+target <- tigris::states() |> 
   dplyr::filter(NAME == 'Maryland') |>
-  sf::st_transform(32615)
+  sf::st_transform(5070)
 
 TestGridSizes(target)
 output <- GridBasedSample(target)
 
 ggplot() + 
+  geom_sf(data = target) + 
   geom_sf(data = output, aes(fill = Assigned))
 
