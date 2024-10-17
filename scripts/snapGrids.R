@@ -67,7 +67,7 @@ snapGrids <- function(x, neighb_grid, focal_grid){
     sf::st_difference()
   
   all_pts_surface <- sf::st_difference(
-    all_pts_surface,  sf::st_union(sf::st_combine(neighb_grid))
+    all_pts_surface,  sf::st_make_valid(sf::st_union(sf::st_combine(neighb_grid)))
     ) |>
     sf::st_make_valid()
   
