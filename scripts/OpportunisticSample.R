@@ -5,41 +5,67 @@ library(tidyverse)
 nc <- sf::st_read(system.file("shape/nc.shp", package="sf")) |>
   dplyr::select(NAME) |>
   sf::st_transform(32617)
-set.seed(41)
-existing_collections <- nc[sample(5),] |>
+set.seed(42)
+existing_collections <- nc[sample(1:nrow(nc),size = 5),] |>
   sf::st_point_on_surface()
 
 ggplot() + 
-  geom_sf(data = existing_collections, color = 'red') + 
-  geom_sf(data = zones, alpha = 0.5) + 
-  geom_sf(data = kmeans_centers)
+  geom_sf(data = nc)  +
+  geom_sf(data = existing_collections) 
 
-zones <- sf::st_voronoi(st_union(existing_collections), st_union(nc)) |>
-  sf::st_collection_extract(type = "POLYGON") |> 
-  sf::st_sf() |> 
-  sf::st_intersection(st_union(nc)) 
-zones <- sf::st_intersection(zones, sf::st_union(nc))
+#' get n points located reasonably far away from existing collections
+#' 
+#' This is a component of finishing up an opportunistic sample design trying to maximize the distance between 
+#' the already accessioned collections and new collections. 
+#' @param x the input sf polygon, i.e. species range or administrative unit, where sampling is desired. 
+#' @param collections an sf point geometry data set of where existing collections have been made. 
+#' @param i the index of for loop position. 
+FurthestPoint <- function(x, collections, i){
+  
+  pts <- sf::st_sample(x, size = 500, type = 'regular') |>
+    sf::st_as_sf()
+  d_mat <- sf::st_distance(pts, collections)
+  pts$meanDistance <- apply(d_mat, 1, mean)
+  x <- sf::st_coordinates(pts)[,1];  y <- sf::st_coordinates(pts)[,2]
+  pts <- sf::st_drop_geometry(pts);  pts <- cbind(pts, x, y)
+  
+  r <- terra::rast(nc, ncol = 50, nrow = 50)
+  mg <- gstat::gstat(
+    id = "meanDistance", locations = ~x+y, formula = meanDistance~1,  
+    data=pts, nmax=5, set=list(idp = .5))
+  z <- terra::interpolate(r, mg, debug.level=0, index=1)
+  z <- terra::mask(z, nc)
+  
+  v <- terra::as.polygons(z) |>
+    sf::st_as_sf()
+  
+  quant975 <- quantile(v$meanDistance.pred, probs = 0.975)
+  # identify the points in the last 5% most disconnected distance. 
+  polys <- dplyr::mutate(v, 
+                         Target = if_else(meanDistance.pred > quant975, TRUE, FALSE), 
+                         .before = geometry) |>
+    dplyr::filter(Target == TRUE) |>
+    sf::st_union() |>
+    sf::st_cast('POLYGON') 
+  
+  if(length(polys)>1){
+    ord <- order(sf::st_area(polys), decreasing = TRUE)
+  }
+  
+  pt <- sf::st_point_on_surface(polys) |>
+    sf::st_as_sf() |>
+    dplyr::rename(geometry = x) |>
+    dplyr::mutate(SampledOrder = i, .before = geometry) 
+  
+  return(pt)
+  
+}
 
+pt <- FurthestPoint(nc, collections = existing_collections, i = 1)
 
-reg_pts <- sf::st_sample(nc, size = 500, type = 'regular', by_polygon = F) |>
-  sf::st_coordinates(pts)
-fixed_pts <- matrix(rep(sf::st_coordinates(existing_collections), each = 100), ncol = 2)
-pts <- rbind(reg_pts, fixed_pts)
-
-kmeans_res <- kmeans(pts, centers = 20)
-pts$Cluster <- kmeans_res$cluster
-
-kmeans_centers <- setNames(
-  data.frame(kmeans_res['centers'], 1:nrow(kmeans_res['centers'][[1]])), 
-  # use the centers as voronoi cores ... ?
-  c('X', 'Y', 'Cluster'))
-#kmeans_centers_10 <- sf::st_as_sf(kmeans_centers, coords = c('X', 'Y'), crs = 32617)
-kmeans_centers_100 <- sf::st_as_sf(kmeans_centers, coords = c('X', 'Y'), crs = 32617)
 
 ggplot() + 
-  geom_sf(data = existing_collections, color = 'red') + 
-  geom_sf(data = zones, alpha = 0.5) + 
-  geom_sf(data = kmeans_centers_10, alpha = 0.5, color = 'blue') + 
-  geom_sf(data = kmeans_centers_100, alpha = 0.5, color = 'purple')
-
+  geom_sf(data = nc) + 
+  geom_sf(data = pt)
+  
 
