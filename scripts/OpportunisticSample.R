@@ -26,15 +26,52 @@ VoronoiSampler <- function(polygon, n_col, collections){
   
   vorons <- sf::st_voronoi(sf::st_union(pts), sf::st_as_sfc(st_bbox(polygon)))
   vorons <- sf::st_intersection(st_cast(vorons), sf::st_union(polygon))
-  variance <- var(sf::st_area(vorons))
+  variance <- var(as.numeric(sf::st_area(vorons))/10000)
   
-  return(list(
-    Variance = variance, 
-    Polygons = vorons
+  # need to define two slots, one for the variance numeric results, and one for the polygons
+  
+  return(list( # not the way !
+    'Variance' = variance,
+    'Polygons' = vorons
   ))
 }
 
-lapply(seq_len(10), FUN = VoronoiSampler, polygon = nc, n_col = 10, collections = existing_collections)
+out <- replicate(
+  100, 
+  VoronoiSampler(polygon = nc, n_col = 10, collections = existing_collections), 
+  simplify = FALSE)
+
+
+get_elements <- function(x, element) { # @ StackOverflow Allan Cameron 
+  if(is.list(x))
+  {
+    if(element %in% names(x)) x[[element]]
+    else lapply(x, get_elements, element = element)
+  }
+}
+
+# we use variance to determine the configuration of voronoi polygons which have
+# the most equally sized polygons. 
+variance <- unlist(get_elements(out, 'Variance'))
+selected <- out[which.min(variance)][[1]]$Polygons
+
+# Determining the 0.1% quantile for the variance in size of the sampling grids. 
+# Using non-parametric approaches, of bootstrap resampling (replicates = 9999) ,
+# with an 95% confidence level. 
+
+# we can show that the polygon arrangement we have chosen is in the top 1000 of
+# options if npbs[["bca"]][["lower"]] > min(variance) == TRUE . 
+# If the above condition is not meet, we can also say that it is less than the estimate
+# npbs[["t0"]] < min(variance)
+npbs <- nptest::np.boot(x = variance, statistic = quantile, 
+                probs = c(0.001), level = 0.95)
+
+min(variance)
+npbs[["t0"]] # the statistic of interest 
+npbs[["bca"]][["lower"]]
+npbs[["bca"]][["upper"]]
+
+
 
 
 
