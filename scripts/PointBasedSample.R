@@ -20,7 +20,7 @@ plot(out$Geometry)
 #' @param collections an sf point geometry data set of where existing collections have been made.
 #' @param reps further arguments passed to np.boot 
 #' @BS.reps number of bootstrap replicates for evaluating results. 
-#' @examples 
+#' @examples \donttest{
 #' #' Design additional collections around already existing collections
 #' nc <- spData::us_states |>
 #'   dplyr::select(NAME) |>
@@ -35,6 +35,7 @@ plot(out$Geometry)
 #' # 2 seconds per species so not much concern on the speed end of things!
 #' head(out$SummaryData)
 #' plot(out$Geometry)
+#' }
 #' @export
 PointBasedSample <- function(polygon, n, collections, reps, BS.reps){
   

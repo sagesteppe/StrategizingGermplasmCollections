@@ -71,3 +71,12 @@ EqualAreaSample <- function(x, n, pts, projection, returnProjected){
   return(voronoi_poly)
   
 }
+
+library(tidyverse)
+nc <- spData::us_states |>
+  filter(NAME == 'Rhode Island')
+
+zones <- EqualAreaSample(nc, n = 20, pts = 1000, projection = 32617)
+
+plot(nc, main = 'Counties of North Carolina')
+plot(zones, main = 'Clusters')
