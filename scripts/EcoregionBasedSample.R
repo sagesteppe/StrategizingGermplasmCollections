@@ -107,13 +107,19 @@ EcoregionBasedSample <- function(x, ecoregions, n, increase_method, reduction_me
     
     if(reduction_method=='Largest'){
       out <- area[area$L4_KEY %in% area_summaries[order(area_summaries$Total_area, decreasing = TRUE)[1:n],]$Name, ]
-      out <- dplyr::slice_max(out, n = 1, order_by = dplyr::desc(Area), by = US_L4NAME)
+      out <- dplyr::group_by(out, L4_KEY) |> 
+        dplyr::arrange( dplyr::desc(Area), .by_group = TRUE) |>
+        dplyr::slice(1) 
     } else if(reduction_method=='Smallest'){
       out <- area[area$L4_KEY %in% area_summaries[order(area_summaries$Total_area, decreasing = TRUE)[1:n],]$Name, ]
-      out <- dplyr::slice_max(out, n = 1, order_by = Area, by = US_L4NAME)
+      out <- dplyr::group_by(out, L4_KEY) |> 
+        dplyr::arrange( dplyr::desc(Area), .by_group = TRUE) |>
+        dplyr::slice(1) 
     } else {
       out <- area[area$L4_KEY %in% area_summaries[order(area_summaries$Polygon_ct, decreasing = TRUE)[1:n],]$Name, ]
-      out <- dplyr::slice_max(out, n = 1, order_by = Area, by = US_L4NAME)
+      out <- dplyr::group_by(out, L4_KEY) |> 
+        dplyr::arrange( dplyr::desc(Area), .by_group = TRUE) |>
+        dplyr::slice(1) 
     }
     
     out <- dplyr::mutate(out, n = 1) |>
@@ -133,13 +139,13 @@ EcoregionBasedSample <- function(x, ecoregions, n, increase_method, reduction_me
     dplyr::select(-ID) |>
     dplyr::mutate(
       n = dplyr::if_else(is.na(n), 0, n)
-    )
+    ) |>
+    sf::st_make_valid()
   
 }
 
 
 ob <- EcoregionBasedSample(polygon, ecoregions, n = 20)
-sum(ob$n)
 
 ggplot() + 
   geom_sf(data = ob, aes(fill = n))
