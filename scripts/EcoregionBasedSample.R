@@ -6,14 +6,53 @@ ecoregions <- sf::st_read('../data/spatial/us_eco_l4/us_eco_l4_no_st.shp', quiet
 
 polygon <- spData::us_states |>
   dplyr::select(NAME) |>
-  dplyr::filter(NAME == 'Colorado') |>
+  dplyr::filter(NAME == 'California') |>
   sf::st_transform(4326)
 
-EcoregionBasedSample <- function(x, ecoregions, n, increase_method, reduction_method){
+#' Determine the sample size for n ecoregions in an area
+#' 
+#' Intersect US Omernik level 4 ecoregions with the range of a focal taxon and 
+#' selects n ecoregions to sample. If fewer than n ecoregions exist in the range of 
+#' the species, then extra samples are added to the largest ecoregions by their
+#' area proportions to meet n. 
+#' If more ecoregions exist across the range of the species than n (very common), s
+#' elect a method to determine how sample sizes (in this instance 1 sample per 
+#' ecoregion) are selected. Methods include sampling from the n largest, or 
+#' smallest ecoregions by number, or the ecoregion with the most disconnected
+#'  habitat (measured soley by the number of polygons). Each of these three methods
+#'  then returns the largest polygon within the criterion. 
+#'  
+#'  A note on 'polygons'. Simple features are able to store polygon data in two main
+#'  formats, a 'MULTIPOLYGON', where all individual polygons composing a class are stored
+#'  collectively, or as 'POLYGONS' where each individual polygon is a unique entry within the class. 
+#'  'Polygons' are generally used when two areas of the same class are discontinuous, 
+#'  and an analyst wants to easily analyze them separately.  'MULTIPOLYGONS' are 
+#'  generally created by an analyst interested in understanding properties of the 
+#'  entire class. The EPA Omernik spatial data set comes with both 'POLYGONS' and
+#'  'MULTIPOLYGONS', I have used it somewhat extensively and believe that the 
+#'  creators struck a happy balance between creating too many small polygons, e.g. 
+#'  for areas like coastal reef island (a MULTIPOLYGON use case), and big polygons. 
+#'  I do not modify them here, and on rare occasion (essentially islands), what I
+#'  refer to as a 'polygon' may technically be a multipolygon. 
+#'  
+#' @param x a range of species
+#' @param ecoregions an Omernik L4 ecoregion vector data file (shapefile) in sf
+#' format with minimal modifications made to it. 
+#' @param n desired total number of samples across this range
+#' @param increase_method Method to implement if the number of L4 ecoregions is
+#' less than n. 'Area' (the default) will reallocate points based on the relative
+#' sizes of each ecoregion. 
+#' @param decrease_method Method to implement if the number of L4 ecoregions is
+#' greater than n. 'Largest' (the default) will select the n largest ecoregions by 
+#' total area, and then select the largest single polygon within each of these classes. 
+#' 'Smallest' will select the n smallest ecoregions by total area, and then select
+#' the largest single polygon within these classes. 'Most' will select the n ecoregions
+#' with the most polygons, and select the largest polygon from each. 
+EcoregionBasedSample <- function(x, ecoregions, n, increase_method, decrease_method){
   
   if(missing(n)){n<-20} 
   if(missing(increase_method)){increase_method<-'Area'}
-  if(missing(reduction_method)){reduction_method<-'Largest'}
+  if(missing(decrease_method)){decrease_method<-'Largest'}
   sf::st_agr(ecoregions) = 'constant'
   sf::st_agr(x) = 'constant'
   
@@ -105,15 +144,15 @@ EcoregionBasedSample <- function(x, ecoregions, n, increase_method, reduction_me
     # by the number of unique polygons per L4, which can be roughly considered as
     # representing the amount of discontinuity of each L4. 
     
-    if(reduction_method=='Largest'){
+    if(decrease_method=='Largest'){
       out <- area[area$L4_KEY %in% area_summaries[order(area_summaries$Total_area, decreasing = TRUE)[1:n],]$Name, ]
       out <- dplyr::group_by(out, L4_KEY) |> 
-        dplyr::arrange( dplyr::desc(Area), .by_group = TRUE) |>
+        dplyr::arrange(dplyr::desc(Area), .by_group = TRUE) |>
         dplyr::slice(1) 
-    } else if(reduction_method=='Smallest'){
-      out <- area[area$L4_KEY %in% area_summaries[order(area_summaries$Total_area, decreasing = TRUE)[1:n],]$Name, ]
+    } else if(decrease_method=='Smallest'){
+      out <- area[area$L4_KEY %in% area_summaries[order(area_summaries$Total_area, decreasing = FALSE)[1:n],]$Name, ]
       out <- dplyr::group_by(out, L4_KEY) |> 
-        dplyr::arrange( dplyr::desc(Area), .by_group = TRUE) |>
+        dplyr::arrange(dplyr::desc(Area), .by_group = TRUE) |>
         dplyr::slice(1) 
     } else {
       out <- area[area$L4_KEY %in% area_summaries[order(area_summaries$Polygon_ct, decreasing = TRUE)[1:n],]$Name, ]
