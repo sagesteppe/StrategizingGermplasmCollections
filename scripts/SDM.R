@@ -2,8 +2,6 @@ library(dismo)
 library(terra)
 library(spdep)
 
-
-
 ################################################################################
 bradypus <- read.csv(paste0(system.file(package="dismo"), "/ex/bradypus.csv"))
 bradypus <- bradypus[,c('lon', 'lat')]
@@ -11,8 +9,8 @@ bradypus <- bradypus[,c('lon', 'lat')]
 files <- list.files(path=paste(system.file(package="dismo"), '/ex',
                                sep=''),  pattern='grd',  full.names=TRUE )
 predictors <- terra::rast(files) # import the indepedent variables
-predictors$x <- init(predictors, fun = 'x')
-predictors$y <- init(predictors, fun = 'y')
+predictors$x <- init(predictors, fun = 'x') 
+predictors$y <- init(predictors, fun = 'y') 
 # Step 1 Select Background points - let's use SDM package envidist for this
 
 pa <- sdm::background(x = predictors, n = nrow(bradypus), sp = bradypus, method = 'eDist') |>
@@ -35,13 +33,12 @@ thinned <- spThin::thin(loc.data = brady.df, thin.par = thinD,
              write.files = FALSE, 
              write.log.file = FALSE)
 
-
 thinned <- data.frame(thinned[ which.max(unlist(lapply(thinned, nrow)))]) |>
   sf::st_as_sf(coords = c('Longitude', 'Latitude'), crs = 4326)
 
 bradypus <- bradypus[lengths(sf::st_intersects(bradypus, thinned))>0,]
 
-rm(thinned, brady.df)
+rm(thinned, brady.df, pa, thinD, dists, files)
 
 # Step 1.3 - Extract data to points for modelling
 bradypus <- terra::extract(predictors, bradypus, bind = TRUE) |>
@@ -54,29 +51,35 @@ bradypus <- terra::extract(predictors, bradypus, bind = TRUE) |>
 # calculate MORANS I to determine the effect of spatial
 # autocorrelation on the model. 
 
-index <- unlist(caret::createDataPartition(bradypus$occurrence, p=0.8))
+index <- unlist(caret::createDataPartition(bradypus$occurrence, p=0.85))
 train <- bradypus[index,]
 test <- sf::st_drop_geometry(bradypus[-index,])
 
+rm(index)
 # Fit a simple model to the data and determine whether Spatial autocorrelation is
 # present in the residuals. If so, we will apply spThin. 
 
 model <- glm(factor(occurrence) ~ . , data = sf::st_drop_geometry(train), family = 'binomial')
 nb <- spdep::knearneigh(train, 4) # now create a neighbor object between the points
 lw <- spdep::nb2listwdist(spdep::knn2nb(nb), train, type="idw")
-spdep::moran.test(model$residuals, lw)
+morI <- spdep::moran.test(model$residuals, lw)
 
+
+predict(model)[1:5] #- predict(model, type = 'response') #== model$residuals
+vals <- (as.numeric(train$occurrence) - model$fitted.values) / (model$fitted.values * (1 - model$fitted.values))
+options(scipen = 999)
+
+observed <- as.numeric(train$occurrence) - 1
+predicted <- predict(model, newdata = train, type = 'response') 
+residuals <- observed - predicted
+
+rm(nb, lw, model)
 # Step 2 Develop CV folds for steps 3 and 4
-
-library(NbClust)
-
-chc <- hclust(dist(sf::st_coordinates(train)), method="complete")
-train$Cluster <- cutree(chc, k = 5)
-
-indices_LLO <- CAST::CreateSpacetimeFolds(train, spacevar = 'Cluster', k=5)
 indices_knndm <- CAST::knndm(train, predictors, k=5)
 
 # Step 3. Recursive feature elimination using CAST developed folds
+
+train_dat <- sf::st_drop_geometry(train[, -which(names(train) %in% c("occurrence"))])
 ctrl <- caret::rfeControl(
   method = "LG0CV",
   repeats = 5,
@@ -87,29 +90,28 @@ ctrl <- caret::rfeControl(
 
 lmProfile <- caret::rfe(
   method = 'glmnet',
-  sizes = c(2:9), 
-  sf::st_drop_geometry(train)[,2:10],
+  sizes = c(2:ncol(train_dat)), 
+  train_dat,
   sf::st_drop_geometry(train)$occurrence,
   rfeControl = ctrl)
 
-predictors(lmProfile) # this is how we subset the relevant variables. 
 
+rm(ctrl)
 # Step 4. Model fitting using CAST developed folds
 train1 <- dplyr::mutate(
-  train, 
+  train, # requires a YES OR NO or T/F just not anything numeric alike. 
   occurrence = dplyr::if_else(occurrence==1, 'YES', 'NO'))
 
-test_class_cv_model <- train(
+cv_model <- train(
   x = sf::st_drop_geometry(train1[,predictors(lmProfile)]), 
   st_drop_geometry(train)$occurrence, 
   method = "glmnet", 
   family = 'binomial',
   index = indices_knndm$indx_train)
 
-test_class_cv_model
+sub <- train_dat[,predictors(lmProfile)]
 
-sub <- sf::st_drop_geometry(train[,predictors(lmProfile)])
-
+rm(indices_knndm, train1)
 # now fit the model just using glmnet::glment in order that we can get the 
 # type of response for type='prob' rather than log odds or labelled classes
 # which we need to work with terra::predict. 
@@ -118,89 +120,52 @@ mod <- glmnet::glmnet(
   st_drop_geometry(train)$occurrence, 
   family = 'binomial', 
   keep = TRUE,
-  lambda = 0.04821905, alpha = 0.1
+  lambda = cv_model$bestTune$lambda, alpha = cv_model$bestTune$alpha
 )
 
+
+rm(cv_model, sub)
+# get model information below
 coef(mod)
-# to get the residuals we can do the following
-
 varImp(mod, mod$lambda)
-jvars <- as.matrix(test[, predictors(lmProfile)])
-predictions_LASSO <- predict(mod, newx = jvars, type = 'class')
+predict_mat <- as.matrix(test[, predictors(lmProfile)])
 
-confusionMatrix( as.factor(predictions_LASSO), as.factor(test$occurrence))
-library(glmnet)
-library(ggfortify)
-autoplot(mod, colour = 'blue')
+confusionMatrix(
+  as.factor(predict(mod, newx = predict_mat, type = 'class')), 
+  as.factor(test$occurrence))
 
+ob <- predict(mod, newx = predict_mat)
 
-nb <- spdep::knearneigh(bradypus, 4) # now create a neighbor object between the points
-# the neighbors are scaled by the inverse distance weight between them. 
-lw <- spdep::nb2listwdist(spdep::knn2nb(nb), bradypus, type="idw")
-spdep::moran.test(mod$residuals, lw) # determine spatial autocorrelation within the model
-
-#preds <- predictors[[c("biome", "bio1", 'bio16', 'bio17')]]
-pred <- terra::predict(predictors, mod, type = 'response')
-predictors
+nb <- spdep::knearneigh(train, 4) # now create a neighbor object between the points
+lw <- spdep::nb2listwdist(spdep::knn2nb(nb), train, type="idw")
+# rm(test, train, predict_mat)
 
 
+preds <- predictors[[predictors(lmProfile)]]
+predfun <- function(model, data, ...){
+  predict(model, newx=as.matrix(data), type = 'response')
+}
+
+x <- terra::predict(preds, model = mod, fun=predfun, na.rm=TRUE)
+
+plot(x)
+rm(lmProfile)
 
 
+test.sf <- sf::st_as_sf(test, coords = c('x', 'y'), crs = 4326) |>
+  dplyr::select(occurrence)
 
+test.sf <- terra::extract(x, test.sf, bind = TRUE) |>
+  sf::st_as_sf() |>
+  sf::st_drop_geometry() |>
+  dplyr::mutate(
+    dummyA = 'A', .before = 1) |>
+  dplyr::mutate(
+    dummyB = 'B', .after = 3, 
+    occurrence = as.numeric(occurrence))
 
+colnames(test.sf) <- c('dummyA', 'Observed', 'Predicted', 'dummyB')
 
-x=matrix(rnorm(100*20),100,20)
-y=rnorm(100)
-g2=sample(1:2,100,replace=TRUE)
-g4=sample(1:4,100,replace=TRUE)
-fit1=glmnet::glmnet(x,y)
-predict(fit1,newx=x[1:5,],s=c(0.01,0.005))
-predict(fit1,type="coef")
-fit2=glmnet::glmnet(x,g2,family="binomial")
-predict(fit2,type="response",newx=x[2:5,])
-predict(fit2,type="nonzero")
-fit3=glmnet(x,g4,family="multinomial")
-predict(fit3,newx=x[1:3,],type="response",s=0.01)
+str(test.sf)
 
-
-
-
-
-
-library(ggfortify)
-
-
-
-
-
-
-
-
-
-library(glmmTMB)
-Owls <- transform(Owls,
-                  Nest=reorder(Nest,NegPerChick),
-                  NCalls=SiblingNegotiation,
-                  FT=FoodTreatment)
-
-fit_zipoisson <- glmmTMB(NCalls~(FT+ArrivalTime)*SexParent+
-                           offset(log(BroodSize))+(1|Nest),
-                         data=Owls,
-                         ziformula=~1,
-                         family=poisson)
-
-
-
-train$pos <- numFactor(train$x, train$y)
-# then create a dummy group factor to be used as a random term
-train$ID <- factor(rep(1, nrow(train)))
-
-# fit the model
-m_tmb <- glmmTMB(occurrence ~ bio17 + bio12 + bio16 + bio1 + exp(pos + 0 | ID), train,
-                 family = 'binomial') # take some time to fit
-
-summary(m_tmb)
-sims <- DHARMa::simulateResiduals(m_tmb)
-plot(sims)
-
-
+PresenceAbsence::optimal.thresholds(test.sf)
