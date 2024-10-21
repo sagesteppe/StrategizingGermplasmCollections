@@ -147,25 +147,46 @@ predfun <- function(model, data, ...){
 }
 
 x <- terra::predict(preds, model = mod, fun=predfun, na.rm=TRUE)
-
 plot(x)
-rm(lmProfile)
 
+rm(lmProfile, predfun)
+
+
+
+
+
+
+# determine a threshold for creating a binomial map of the species distribution
+# we want to predict MORE habitat than exists, so we want to maximize sensitivity
+# in our classification. 
 
 test.sf <- sf::st_as_sf(test, coords = c('x', 'y'), crs = 4326) |>
   dplyr::select(occurrence)
 
 test.sf <- terra::extract(x, test.sf, bind = TRUE) |>
   sf::st_as_sf() |>
-  sf::st_drop_geometry() |>
-  dplyr::mutate(
-    dummyA = 'A', .before = 1) |>
-  dplyr::mutate(
-    dummyB = 'B', .after = 3, 
-    occurrence = as.numeric(occurrence))
+  sf::st_drop_geometry() 
 
-colnames(test.sf) <- c('dummyA', 'Observed', 'Predicted', 'dummyB')
 
-str(test.sf)
+eval_ob <- dismo::evaluate(
+  p = test.sf[test.sf$occurrence==1,'s0'],
+  a = test.sf[test.sf$occurrence==0,'s0']
+)
+thresh <- threshold(eval_ob)
+cut <- thresh[['sensitivity']]
 
-PresenceAbsence::optimal.thresholds(test.sf)
+m <- matrix(
+  c(
+    0, cut, 0,
+    cut, 1, 1), 
+  ncol = 3, byrow= TRUE)
+
+x_binary <- terra::classify(x, m) # create a YES/NO raster
+
+rm(eval_ob, thresh, cut, m)
+# use sf::st_buffer() to only keep habitat within XXX distance from known populations
+plot(x_binary)
+points(bradypus[bradypus$occurrence==1,])
+
+sf::st_buffer()
+
