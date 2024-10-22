@@ -1,47 +1,48 @@
-library(dismo)
-library(terra)
-library(spdep)
-
+# install.packages('dismo', 'spdep', 'spThin', 'glmnet', 'caret', 'CAST')
 ################################################################################
-bradypus <- read.csv(paste0(system.file(package="dismo"), "/ex/bradypus.csv"))
-bradypus <- bradypus[,c('lon', 'lat')]
 
-files <- list.files(path=paste(system.file(package="dismo"), '/ex',
-                               sep=''),  pattern='grd',  full.names=TRUE )
+x <- read.csv(paste0(system.file(package="dismo"), file.path('ex', 'bradypus.csv')))
+x <- x[,c('lon', 'lat')]
+x <- dplyr::distinct(x, .keep_all = )
+
+files <- list.files(
+  path = file.path(system.file(package="dismo"), 'ex'), 
+  pattern = 'grd',  full.names=TRUE )
 predictors <- terra::rast(files) # import the indepedent variables
-predictors$x <- init(predictors, fun = 'x') 
-predictors$y <- init(predictors, fun = 'y') 
+predictors$x <- terra::init(predictors, fun = 'x') 
+predictors$y <- terra::init(predictors, fun = 'y') 
 # Step 1 Select Background points - let's use SDM package envidist for this
 
-pa <- sdm::background(x = predictors, n = nrow(bradypus), sp = bradypus, method = 'eDist') |>
+pa <- sdm::background(x = predictors, n = nrow(x), sp = x, method = 'eDist') |>
   dplyr::select(lon = x,  lat = y)
 
-pa$occurrence <- 0 ; bradypus$occurrence <- 1
-bradypus <- dplyr::bind_rows(bradypus, pa) |> # combine the presence and pseudoabsence points
+pa$occurrence <- 0 ; x$occurrence <- 1
+x <- dplyr::bind_rows(x, pa) |> # combine the presence and pseudoabsence points
   sf::st_as_sf(coords = c('lon', 'lat'), crs = 4326)  |>
   dplyr::mutate(occurrence = factor(occurrence))
 
-brady.df <- data.frame(Species = 'Species', data.frame(sf::st_coordinates(bradypus)))
+brady.df <- data.frame(Species = 'Species', data.frame(sf::st_coordinates(x)))
 
-dists <- sf::st_distance(bradypus[ sf::st_nearest_feature(bradypus), ], bradypus, by_element = TRUE)
-thinD <- as.numeric(quantile(dists, c(0.1)) / 1000)
+dists <- sf::st_distance(x[ sf::st_nearest_feature(x), ], x, by_element = TRUE)
+thinD <- as.numeric(quantile(dists, c(0.1)) / 1000) # ARGUMENT TO FN @PARAM 
 
-thinned <- spThin::thin(loc.data = brady.df, thin.par = thinD,
-             spec.col = 'Species',
-             lat.col = 'Y', long.col = 'X', reps = 100, 
-             locs.thinned.list.return = TRUE, 
-             write.files = FALSE, 
-             write.log.file = FALSE)
+thinned <- spThin::thin(
+  loc.data = brady.df, thin.par = thinD,
+  spec.col = 'Species',
+  lat.col = 'Y', long.col = 'X', reps = 100, 
+  locs.thinned.list.return = TRUE, 
+  write.files = FALSE, 
+  write.log.file = FALSE)
 
 thinned <- data.frame(thinned[ which.max(unlist(lapply(thinned, nrow)))]) |>
   sf::st_as_sf(coords = c('Longitude', 'Latitude'), crs = 4326)
 
-bradypus <- bradypus[lengths(sf::st_intersects(bradypus, thinned))>0,]
+x <- x[lengths(sf::st_intersects(x, thinned))>0,]
 
 rm(thinned, brady.df, pa, thinD, dists, files)
 
 # Step 1.3 - Extract data to points for modelling
-bradypus <- terra::extract(predictors, bradypus, bind = TRUE) |>
+x <- terra::extract(predictors, x, bind = TRUE) |>
   sf::st_as_sf() 
 
 # Step 1.2 - create a data split for testing the residuals of the glmnet model
@@ -51,9 +52,9 @@ bradypus <- terra::extract(predictors, bradypus, bind = TRUE) |>
 # calculate MORANS I to determine the effect of spatial
 # autocorrelation on the model. 
 
-index <- unlist(caret::createDataPartition(bradypus$occurrence, p=0.85))
-train <- bradypus[index,]
-test <- sf::st_drop_geometry(bradypus[-index,])
+index <- unlist(caret::createDataPartition(x$occurrence, p=0.85)) # @ ARGUMENT TO FN @PARAM
+train <- x[index,]
+test <- sf::st_drop_geometry(x[-index,])
 
 rm(index)
 # Fit a simple model to the data and determine whether Spatial autocorrelation is
@@ -64,16 +65,10 @@ nb <- spdep::knearneigh(train, 4) # now create a neighbor object between the poi
 lw <- spdep::nb2listwdist(spdep::knn2nb(nb), train, type="idw")
 morI <- spdep::moran.test(model$residuals, lw)
 
-
-predict(model)[1:5] #- predict(model, type = 'response') #== model$residuals
-vals <- (as.numeric(train$occurrence) - model$fitted.values) / (model$fitted.values * (1 - model$fitted.values))
-options(scipen = 999)
-
-observed <- as.numeric(train$occurrence) - 1
 predicted <- predict(model, newdata = train, type = 'response') 
-residuals <- observed - predicted
+residuals <- (as.numeric(train$occurrence) - 1) - predicted
 
-rm(nb, lw, model)
+rm(nb, lw, model, predicted, residuals)
 # Step 2 Develop CV folds for steps 3 and 4
 indices_knndm <- CAST::knndm(train, predictors, k=5)
 
@@ -104,27 +99,27 @@ train1 <- dplyr::mutate(
 
 cv_model <- train(
   x = sf::st_drop_geometry(train1[,predictors(lmProfile)]), 
-  st_drop_geometry(train)$occurrence, 
+  sf::st_drop_geometry(train)$occurrence, 
   method = "glmnet", 
   family = 'binomial',
   index = indices_knndm$indx_train)
 
 sub <- train_dat[,predictors(lmProfile)]
 
-rm(indices_knndm, train1)
+rm(train1, indices_knndm, train_dat)
 # now fit the model just using glmnet::glment in order that we can get the 
 # type of response for type='prob' rather than log odds or labelled classes
 # which we need to work with terra::predict. 
 mod <- glmnet::glmnet(
   x = sub, 
-  st_drop_geometry(train)$occurrence, 
+  sf::st_drop_geometry(train)$occurrence, 
   family = 'binomial', 
   keep = TRUE,
   lambda = cv_model$bestTune$lambda, alpha = cv_model$bestTune$alpha
 )
 
+rm(cv_model)
 
-rm(cv_model, sub)
 # get model information below
 coef(mod)
 varImp(mod, mod$lambda)
@@ -136,25 +131,29 @@ confusionMatrix(
 
 ob <- predict(mod, newx = predict_mat)
 
-nb <- spdep::knearneigh(train, 4) # now create a neighbor object between the points
-lw <- spdep::nb2listwdist(spdep::knn2nb(nb), train, type="idw")
-# rm(test, train, predict_mat)
+# determine whether there is strong evidence for spatial autocorrelation in the
+# residuals. 
+fitted_values <- predict(mod, newx = as.matrix(sub))
+residuals <- (as.numeric( sf::st_drop_geometry(train$occurrence))-1) - fitted_values
 
+nb <- spdep::knearneigh(sf::st_as_sf(train, coords = c('x', 'y'), crs = 4326) , 4) 
+# now create a neighbor object between the points
+lw <- spdep::nb2listwdist(spdep::knn2nb(nb), train, type="idw")
+morI <- spdep::moran.test(residuals, lw)
+
+
+rm(predict_mat, residuals, nb, lw, sub, fitted_values)
+## Predict our model onto a gridded surface (raster) ## This will allow for downstream
+# use with the rest of the safeHavens workflow. 
 
 preds <- predictors[[predictors(lmProfile)]]
 predfun <- function(model, data, ...){
   predict(model, newx=as.matrix(data), type = 'response')
 }
 
-x <- terra::predict(preds, model = mod, fun=predfun, na.rm=TRUE)
-plot(x)
+rast_cont <- terra::predict(preds, model = mod, fun=predfun, na.rm=TRUE)
 
-rm(lmProfile, predfun)
-
-
-
-
-
+rm(lmProfile, predfun, preds)
 
 # determine a threshold for creating a binomial map of the species distribution
 # we want to predict MORE habitat than exists, so we want to maximize sensitivity
@@ -163,30 +162,90 @@ rm(lmProfile, predfun)
 test.sf <- sf::st_as_sf(test, coords = c('x', 'y'), crs = 4326) |>
   dplyr::select(occurrence)
 
-test.sf <- terra::extract(x, test.sf, bind = TRUE) |>
+test.sf <- terra::extract(rast_cont, test.sf, bind = TRUE) |>
   sf::st_as_sf() |>
   sf::st_drop_geometry() 
-
 
 eval_ob <- dismo::evaluate(
   p = test.sf[test.sf$occurrence==1,'s0'],
   a = test.sf[test.sf$occurrence==0,'s0']
 )
-thresh <- threshold(eval_ob)
-cut <- thresh[['sensitivity']]
+thresh <- dismo::threshold(eval_ob)
+cut <- thresh[['sensitivity']] # ARGUMENT TO FN @PARAM 
 
-m <- matrix(
-  c(
-    0, cut, 0,
+m <- matrix( # use this to reclassiy data to a binary raster
+  c( # but more simply, turn the absences into NA for easier masking later on? 
+    0, cut, NA,
     cut, 1, 1), 
   ncol = 3, byrow= TRUE)
 
-x_binary <- terra::classify(x, m) # create a YES/NO raster
+rast_binary <- terra::classify(rast_cont, m) # create a YES/NO raster
 
-rm(eval_ob, thresh, cut, m)
+terra::plot(rast_binary)
+terra::points(x[x$occurrence==1,])
+
+rm(eval_ob, cut, m, test, test.sf)
+
 # use sf::st_buffer() to only keep habitat within XXX distance from known populations
-plot(x_binary)
-points(bradypus[bradypus$occurrence==1,])
+# we'll use another set of cv-folds based on all occurrence data 
+# Essentially, we will see how far the nearest neighbor is from each point in each
+# fold
 
-sf::st_buffer()
+nn_distribution <- function(x, y){
+  ob <- unlist(x)
+  
+  nf <- sf::st_distance(
+    y[sf::st_nearest_feature(y[ob, ]), ],
+    y[ob, ], by_element = TRUE
+  )
+}
 
+train_pres <- x[ x$occurrence==1, ]
+pres <- sf::st_transform(
+  train_pres, 
+  '+proj=laea +lon_0=-421.171875 +lat_0=-16.8672134 +datum=WGS84 +units=m +no_defs')
+indices_knndm <- CAST::knndm(pres, predictors, k=10)
+
+ob <- lapply(indices_knndm[['indx_train']], nn_distribution,y = pres)
+dists <- median(unlist(lapply(ob, quantile, 0.25))) # ARGUMENT TO FN @PARAM 
+
+within_dist <- sf::st_buffer(pres, dists) |>
+  dplyr::summarize(geometry = sf::st_union(geometry)) |>
+  sf::st_simplify() |>
+  sf::st_transform(terra::crs(rast_binary)) |>
+  terra::vect()
+
+rast_clipped <- terra::mask(rast_binary, within_dist)
+
+terra::plot(rast_binary)
+terra::points(train_pres, col = 'red')
+terra::plot(rast_clipped)
+terra::points(train_pres, col = 'red')
+
+rm(train_pres, nn_distribution, indices_knndm, ob, dists, within_dist, pres)
+
+##### WE NEED TO SAVE A WIDE NUMBER OF OBJECTS   ####
+
+# 1) MORANS I
+morI
+# 2) THE MODEL
+mod # saveRDS()
+
+# 2a) MODEL COEFFICIENTS
+
+# 3) CONTINOUS RASTERS PREDS
+rast_cont
+# 4) BINARY RASTER
+rast_binary
+# 4) CLIPPED TO DISTANCE RASTER
+rast_clipped
+# 5) evaluation statistics - from normal old school split. 
+
+# 6) THRESHOLD VALUES. 
+thresh
+
+# 7) THINNED DATA FOR TRAINING MODEL
+
+# 8) CV FOLDS 
+
+rm(thresh, morI, mod, rast_cont, rast_binary, rast_clipped)
