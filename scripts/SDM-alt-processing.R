@@ -119,10 +119,6 @@ mod <- glmnet::glmnet(
 
 rm(cv_model)
 
-
-################################################################################
-####        TRY AND INCORPORATE MORANS EIGENVECTOR MAPS INTO MODEL          ####
-
 train_planar <- sf::st_transform(
   train, '+proj=laea +lon_0=-421.171875 +lat_0=-16.8672134 +datum=WGS84 +units=m +no_defs')
 
@@ -141,22 +137,17 @@ pcnmProfile <- caret::rfe(
   )
 
 preds <- cbind(
+  # occurrence = factor( sf::st_drop_geometry(train$occurrence)), 
   sub, 
   xypcnm.df[,predictors(pcnmProfile)]
   )
 
 # trying to refit the glmnet
 
-fullProfile <- caret::rfe(
-  method = 'glmnet',
-  sizes = c(2:ncol(preds)), 
-  x = preds,
-  y = sf::st_drop_geometry(train)$occurrence,
-  rfeControl = ctrl)
 
 cv_model <- train(
-  x = preds,
-  y = sf::st_drop_geometry(train)$occurrence,
+  x = preds, 
+  sf::st_drop_geometry(train)$occurrence, 
   method = "glmnet", 
   family = 'binomial', 
   index = indices_knndm$indx_train) 
@@ -172,7 +163,6 @@ mod <- glmnet::glmnet(
 # get model information below
 coef(mod)
 varImp(mod, mod$lambda)
-predict_mat <- as.matrix(preds[, predictors(fullProfile)])
 
 confusionMatrix(
   as.factor(predict(mod, newx = predict_mat, type = 'class')), 
@@ -192,6 +182,80 @@ ob <- predict(mod, newx = predict_mat)
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+############ attempt with direct incorporation of the spatial covariance. ######
+library(spmodel)
+
+sub <- sf::st_transform(
+  sub, 
+  '+proj=laea +lon_0=-421.171875 +lat_0=-16.8672134 +datum=WGS84 +units=m +no_defs')
+
+bin_mod <- spmodel::spglm(
+  formula = occurrence ~ x + bio16 + biome + bio7 + bio17 + bio5,
+  family = "binomial",
+  data = sub,
+  spcov_type = "none"
+)
+
+bin_spmod <- spmodel::spglm(
+  formula = occurrence ~  bio16,
+  family = "binomial",
+  data = sub,
+  spcov_type = "spherical"
+)
+
+bin_spmod_anis <- spglm(
+  formula = occurrence ~ x + bio16 + biome + bio7 + bio17 + bio5,
+  family = "binomial",
+  data = sub,
+  spcov_type = "spherical",
+  anisotropy = TRUE
+)
+
+AIC(bin_mod, bin_spmod, bin_spmod_anis)
+AUROC(bin_spmod)
+
+summary(bin_spmod)
+
+
+# get model information below
+coef(mod)
+varImp(mod, mod$lambda)
+predict_mat <- as.matrix(test[, predictors(lmProfile)])
+
+confusionMatrix(
+  as.factor(predict(mod, newx = predict_mat, type = 'class')), 
+  as.factor(test$occurrence))
+
+ob <- predict(mod, newx = predict_mat)
 
 # determine whether there is strong evidence for spatial autocorrelation in the
 # residuals. 
