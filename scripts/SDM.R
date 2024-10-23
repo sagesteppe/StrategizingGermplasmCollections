@@ -181,3 +181,25 @@ writeSDMresults(
 
 
 
+identifyClusters <- function(x){
+  f_rasts[['Supplemented']]
+  
+}
+pts <- terra::spatSample(
+  f_rasts[['Supplemented']], 
+  as.points = TRUE,
+  method = 'random', size = 500, na.rm = TRUE)
+
+pts <- terra::extract(
+  predictors, pts, xy = TRUE,  bind = TRUE
+  ) |>
+  as.data.frame() |>
+  dplyr::select(-Supplemented)
+
+abs_coef <- abs(c(as.numeric(coef(mod)), 0.001, 0.001)) # add tiny value for the weights to the long/latitude
+abs_coef <- abs_coef[2:length(abs_coef)] # remove the intercept term
+
+weighted_mat <- sweep(pts, 2, abs_coef, FUN="*")
+
+
+cluster
