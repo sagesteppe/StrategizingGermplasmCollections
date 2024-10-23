@@ -1,5 +1,4 @@
 # install.packages('dismo', 'spdep', 'spThin', 'glmnet', 'caret', 'CAST')
-# install.packages('adespatial', 'jtools')
 ################################################################################
 
 x <- read.csv(file.path(system.file(package="dismo"), 'ex', 'bradypus.csv'))
@@ -54,7 +53,7 @@ x <- terra::extract(predictors, x, bind = TRUE) |>
 
 index <- unlist(caret::createDataPartition(x$occurrence, p=0.85)) # @ ARGUMENT TO FN @PARAM
 train <- x[index,]
-test <- sf::st_drop_geometry(x[-index,])
+test <- x[-index,]
 
 rm(index)
 # Fit a simple model to the data and determine whether Spatial autocorrelation is
@@ -85,7 +84,7 @@ ctrl <- caret::rfeControl(
 
 lmProfile <- caret::rfe(
   method = 'glmnet',
-  sizes = c(2:ncol(train_dat)), 
+  sizes = c(3:ncol(train_dat)), 
   x = train_dat,
   y = sf::st_drop_geometry(train)$occurrence,
   rfeControl = ctrl)
@@ -121,26 +120,30 @@ rm(cv_model)
 ###################
 
 train_planar <- sf::st_transform(
-  train, '+proj=laea +lon_0=-421.171875 +lat_0=-16.8672134 +datum=WGS84 +units=m +no_defs')
+  train, '+proj=laea +lon_0=-421.171875 +lat_0=-16.8672134 +datum=WGS84 +units=m +no_defs') 
 
 dis <- sf::st_distance(train_planar)
 dis <- apply(dis, 2, as.numeric)
 xypcnm <- vegan::pcnm(dis)
-xypcnm.df <- data.frame(xypcnm$vectors)
+xypcnm.df <- data.frame(xypcnm$vectors)[,1:20]
 
 pcnmProfile <- caret::rfe( 
   method = 'glmnet', # https://doi.org/10.1111/gean.12054
   x = xypcnm.df, 
-  sizes = 1:4,
+  sizes = 1:5,
   sf::st_drop_geometry(train)$occurrence,
   rfeControl = ctrl, 
   index = indices_knndm$indx_train
   )
 
 
-xypcnm.df <- xypcnm.df[,predictors(pcnmProfile)]
+xypcnm.df <- xypcnm.df[,caret::predictors(pcnmProfile)]
 preds <- cbind(sub, xypcnm.df)
-#rm(pcnmProfile)
+
+if(is.numeric(xypcnm.df)){
+  colnames(preds)[length(preds)] <- caret::predictors(pcnmProfile)}
+
+rm(xypcnm, dis, train_planar)
 # trying to refit the glmnet
 
 cv_model <- train( # let's extract the model performance for the top alpha/lambda info here. 
@@ -162,43 +165,54 @@ mod <- glmnet::glmnet(
 # for the relevant layers onto our independent test data, this will require us
 # to create PCNM raster surfaces
 
-df <- setNames(
-  data.frame(
-    cbind(sf::st_coordinates(train), xypcnm.df[,1])),
-  c('X', 'Y', 'PCNM'))
-
 xypcnm.sf <- cbind(xypcnm.df, dplyr::select(train, geometry)) |> 
   sf::st_as_sf()
 
-fit <- fields::Tps(sf::st_coordinates(xypcnm.sf), xypcnm.sf$PCNM82)
-p <- terra::rast(predictors[[1]])
-mem1 <- terra::interpolate(p, fit)
-mem1 <- terra::mask(mem1, predictors[[1]])
 
-pcnm2raster <- function(x){
+if(is.data.frame(xypcnm.df)){
+  pcnm2raster <- function(x){
+    
+    fit <- fields::Tps(sf::st_coordinates(xypcnm.sf), x)
+    p <- terra::rast(predictors[[1]])
+    pcnm <- terra::interpolate(p, fit)
+    pcnm <- terra::mask(pcnm, predictors[[1]])
+    
+    return(pcnm)
+  }
   
-  fit <- fields::Tps(sf::st_coordinates(xypcnm.sf), x)
+  pcnm <- lapply(xypcnm.df, pcnm2raster)
+  pcnm <- terra::rast(pcnm)
+  names(pcnm) <- caret::predictors(pcnmProfile)
+
+} else if(is.numeric(xypcnm.df)){
+  
+  fit <- fields::Tps(sf::st_coordinates(xypcnm.sf), xypcnm.df)
   p <- terra::rast(predictors[[1]])
   pcnm <- terra::interpolate(p, fit)
   pcnm <- terra::mask(pcnm, predictors[[1]])
+  names(pcnm) <- caret::predictors(pcnmProfile)
   
-  return(pcnm)
-}
+  rm(fit, p)
+}  
 
-pcnm <- lapply(xypcnm.df, pcnm2raster)
-pcnm <- terra::rast(pcnm)
+predictors <- c(predictors, pcnm)
+terra::plot(predictors)
 
+rm(xypcnm.sf, pcnm2raster, xypcnm.df, pcnmProfile)
 
 # get model information below
-coef(mod)
-varImp(mod, mod$lambda)
-predict_mat <- as.matrix(preds)
+vars <- rownames(coef(mod)); vars <- vars[2:length(vars)]
 
-confusionMatrix(
+# now we need just the COORDINATES FOR TEST and will extract the data from
+# this set of predictors to them... 
+predict_mat <- predictors[[vars]]
+predict_mat <- as.matrix(
+  terra::extract(predict_mat, test, ID = FALSE) 
+)
+
+cm <- confusionMatrix(
   as.factor(predict(mod, newx = predict_mat, type = 'class')), 
   as.factor(test$occurrence))
-
-ob <- predict(mod, newx = predict_mat)
 
 # determine whether there is strong evidence for spatial autocorrelation in the
 # residuals. 
@@ -210,12 +224,11 @@ nb <- spdep::knearneigh(sf::st_as_sf(train, coords = c('x', 'y'), crs = 4326) , 
 lw <- spdep::nb2listwdist(spdep::knn2nb(nb), train, type="idw")
 morI <- spdep::moran.test(residuals, lw)
 
-
 rm(predict_mat, residuals, nb, lw, sub, fitted_values)
 ## Predict our model onto a gridded surface (raster) ## This will allow for downstream
 # use with the rest of the safeHavens workflow. 
 
-preds <- predictors[[predictors(lmProfile)]]
+preds <- predictors[[vars]]
 predfun <- function(model, data, ...){
   predict(model, newx=as.matrix(data), type = 'response')
 }
@@ -269,16 +282,16 @@ nn_distribution <- function(x, y){
   )
 }
 
-train_pres <- x[ x$occurrence==1, ]
+pres <- x[ x$occurrence==1, ]
 pres <- sf::st_transform(
-  train_pres, 
+  pres, 
   '+proj=laea +lon_0=-421.171875 +lat_0=-16.8672134 +datum=WGS84 +units=m +no_defs')
 indices_knndm <- CAST::knndm(pres, predictors, k=10)
 
-ob <- lapply(indices_knndm[['indx_train']], nn_distribution,y = pres)
-dists <- median(unlist(lapply(ob, quantile, 0.25))) # ARGUMENT TO FN @PARAM 
+nn_dist <- lapply(indices_knndm[['indx_train']], nn_distribution, y = pres)
+dists <- unlist(list(lapply(nn_dist, quantile, 0.25))) # ARGUMENT TO FN @PARAM 
 
-within_dist <- sf::st_buffer(pres, dists) |>
+within_dist <- sf::st_buffer(pres, median(dists)) |>
   dplyr::summarize(geometry = sf::st_union(geometry)) |>
   sf::st_simplify() |>
   sf::st_transform(terra::crs(rast_binary)) |>
@@ -286,84 +299,65 @@ within_dist <- sf::st_buffer(pres, dists) |>
 
 rast_clipped <- terra::mask(rast_binary, within_dist)
 
-terra::plot(rast_binary)
-terra::points(train_pres, col = 'red')
-terra::plot(rast_clipped)
-terra::points(train_pres, col = 'red')
+rm(train_pres, nn_dist, indices_knndm, nn_distribution, within_dist)
+####### IF WE HAVE POINTS WHICH ARE FLOATING IN SPACE - I.E. POINTS W/O  
+# SUITABLE HABITAT MARKED, THEN LET'S ADD the same amount of suitable habitat 
+# to each of them, that was used as the buffer for clipping suitable habitat to the
+# points above. 
 
-rm(train_pres, nn_distribution, indices_knndm, ob, dists, within_dist, pres)
+pres <- sf::st_transform(pres, terra::crs(rast_binary))
+outside_binary <- terra::extract(rast_binary, pres, bind = TRUE) |>
+  sf::st_as_sf() |>
+  dplyr::filter(is.na(s0)) |>
+  sf::st_transform(
+    '+proj=laea +lon_0=-421.171875 +lat_0=-16.8672134 +datum=WGS84 +units=m +no_defs') |>
+  sf::st_buffer(min(dists)) |>
+  dplyr::summarize(geometry = sf::st_union(geometry)) |>
+  dplyr::mutate(occurrence = 1) |>
+  terra::vect() |>
+  terra::project(terra::crs(rast_binary)) |>
+  terra::rasterize( rast_binary, field = 'occurrence')
+
+rast_clipped_supplemented <- max(rast_clipped, outside_binary, na.rm = TRUE)
+
+
+##########   COMBINE ALL RASTERS TOGETHER FOR A FINAL PRODUCT      #############
+f_rasts <- c(rast_cont, rast_binary, rast_clipped, rast_clipped_supplemented)
+names(f_rasts) <- c('Predictions', 'Threshold', 'Clipped', 'Supplemented')
+terra::plot(f_rasts)
+
+rm(outside_binary, pres, rast_clipped_supplemented, rast_clipped, rast_binary)
+
+ctrl
+cv_model
 
 ##### WE NEED TO SAVE A WIDE NUMBER OF OBJECTS   ####
 
-# 1) MORANS I
-morI
-# 2) THE MODEL
+# 1) THE MODEL
 mod # saveRDS()
 
-# 2a) MODEL COEFFICIENTS
+# 2) MODEL COEFFICIENTS
+coef(mod)
 
-# 3) CONTINOUS RASTERS PREDS
+# 3) ALL RASTERS
 rast_cont
-# 4) BINARY RASTER
-rast_binary
-# 4) CLIPPED TO DISTANCE RASTER
-rast_clipped
-# 5) evaluation statistics - from normal old school split. 
 
-# 6) THRESHOLD VALUES. 
+# 4) evaluation statistics - from normal old school split. 
+cm
+
+# 5) THRESHOLD VALUES. 
 thresh
 
-# 7) THINNED DATA FOR TRAINING MODEL
-
-# 8) CV FOLDS 
-
-rm(thresh, morI, mod, rast_cont, rast_binary, rast_clipped)
+# 6) THINNED DATA FOR TRAINING MODEL / CV FOLDS
+str(cv_model)
 
 
+# 8) PCNM layers. 
 
 
 
-
+rm(thresh, mod, rast_cont, rast_binary, rast_clipped)
 
 
 
 
-
-
-
-
-
-
-
-
-
-################################################################################
-######                       TERRA INTERPOLATE WEIRDNESS                  ######
-################################################################################
-
-x <- read.csv(file.path(system.file(package="dismo"), 'ex', 'bradypus.csv'))
-x <- x[,c('lon', 'lat')]
-x <- dplyr::distinct(x, .keep_all = ) |>
-  sf::st_as_sf(coords = c('lon', 'lat'), crs = 4326)
-
-files <- list.files(
-  path = file.path(system.file(package="dismo"), 'ex'), 
-  pattern = 'grd',  full.names=TRUE )
-
-predictors <- terra::rast(files) # import the independent variables
-
-train_planar <- sf::st_transform(
-  x, '+proj=laea +lon_0=-421.171875 +lat_0=-16.8672134 +datum=WGS84 +units=m +no_defs')
-
-dis <- sf::st_distance(train_planar)
-dis <- apply(dis, 2, as.numeric)
-xypcnm <- vegan::pcnm(dis)
-xypcnm.df <- data.frame(xypcnm$vectors)
-
-fit <- fields::Tps(sf::st_coordinates(x), xypcnm.df$PCNM2)
-r <- terra::rast(predictors)
-mem1 <- terra::interpolate(r, fit, FUN = 'predict')
-mem1 <- terra::mask(mem1, predictors)
-
-terra::plot(mem1[[1]])
-terra::points(sf::st_coordinates(x))
