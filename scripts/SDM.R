@@ -1,5 +1,8 @@
 # install.packages('dismo', 'spdep', 'spThin', 'glmnet', 'caret', 'CAST')
-# install.packages('adespatial', 'jtools')
+setwd('~/Documents/assoRted/StrategizingGermplasmCollections')
+source('./scripts/createPCNM_fitModel.R')
+source('./scripts/WriteSDMresults.R')
+source('./scripts/postProcessSDM.R')
 ################################################################################
 
 x <- read.csv(file.path(system.file(package="dismo"), 'ex', 'bradypus.csv'))
@@ -9,12 +12,32 @@ x <- dplyr::distinct(x, .keep_all = )
 files <- list.files(
   path = file.path(system.file(package="dismo"), 'ex'), 
   pattern = 'grd',  full.names=TRUE )
-predictors <- terra::rast(files) # import the indepedent variables
-predictors$x <- terra::init(predictors, fun = 'x') 
-predictors$y <- terra::init(predictors, fun = 'y') 
+predictors <- terra::rast(files) # import the independent variables
+
+
+# Step 0 define spatial extent of study area. 
+
+pts_plan <-   sf::st_transform(
+  sf::st_as_sf(x, coords = c('lon', 'lat'), crs = 4326), 
+  '+proj=laea +lon_0=-421.171875 +lat_0=-16.8672134 +datum=WGS84 +units=m +no_defs')
+
+bb <- sf::st_bbox(pts_plan)
+buff_dist <- as.numeric( # here we get the mean distance of the XY distances of the bb
+  ((bb[3] - bb[1]) + (bb[4] - bb[2])) / 2 
+) / 2 # the mean distance * 0.25 is how much we will enlarge the area of analysis. 
+
+bb1 <- sf::st_union(pts_plan) |>
+  sf::st_buffer(buff_dist) |>
+  terra::vect() |>
+  terra::project(terra::crs(predictors)) |>
+  terra::ext()
+
+p1 <- terra::mask(predictors, bb1)
+
+rm(pts_plan, bb, buff_dist, bb1)
 # Step 1 Select Background points - let's use SDM package envidist for this
 
-pa <- sdm::background(x = predictors, n = nrow(x), sp = x, method = 'eDist') |>
+pa <- sdm::background(x = p1, n = nrow(x), sp = x, method = 'eDist') |>
   dplyr::select(lon = x,  lat = y)
 
 pa$occurrence <- 0 ; x$occurrence <- 1
@@ -25,7 +48,7 @@ x <- dplyr::bind_rows(x, pa) |> # combine the presence and pseudoabsence points
 brady.df <- data.frame(Species = 'Species', data.frame(sf::st_coordinates(x)))
 
 dists <- sf::st_distance(x[ sf::st_nearest_feature(x), ], x, by_element = TRUE)
-thinD <- as.numeric(quantile(dists, c(0.1)) / 1000) # ARGUMENT TO FN @PARAM 
+thinD <- as.numeric(quantile(dists, c(0.05)) / 1000) # ARGUMENT TO FN @PARAM 
 
 thinned <- spThin::thin(
   loc.data = brady.df, thin.par = thinD,
@@ -53,27 +76,16 @@ x <- terra::extract(predictors, x, bind = TRUE) |>
 # calculate MORANS I to determine the effect of spatial
 # autocorrelation on the model. 
 
-index <- unlist(caret::createDataPartition(x$occurrence, p=0.85)) # @ ARGUMENT TO FN @PARAM
+index <- unlist(caret::createDataPartition(x$occurrence, p=0.8)) # @ ARGUMENT TO FN @PARAM
 train <- x[index,]
-test <- sf::st_drop_geometry(x[-index,])
+test <- x[-index,]
 
 rm(index)
-# Fit a simple model to the data and determine whether Spatial autocorrelation is
-# present in the residuals. If so, we will apply spThin. 
 
-model <- glm(factor(occurrence) ~ . , data = sf::st_drop_geometry(train), family = 'binomial')
-nb <- spdep::knearneigh(train, 4) # now create a neighbor object between the points
-lw <- spdep::nb2listwdist(spdep::knn2nb(nb), train, type="idw")
-morI <- spdep::moran.test(model$residuals, lw)
-
-predicted <- predict(model, newdata = train, type = 'response') 
-residuals <- (as.numeric(train$occurrence) - 1) - predicted
-
-rm(nb, lw, model, predicted, residuals)
-# Step 2 Develop CV folds for steps 3 and 4
+# Develop CV folds for modelling
 indices_knndm <- CAST::knndm(train, predictors, k=5)
 
-# Step 3. Recursive feature elimination using CAST developed folds
+# Recursive feature elimination using CAST developed folds
 
 train_dat <- sf::st_drop_geometry(train[, -which(names(train) %in% c("occurrence"))])
 ctrl <- caret::rfeControl(
@@ -86,7 +98,7 @@ ctrl <- caret::rfeControl(
 
 lmProfile <- caret::rfe(
   method = 'glmnet',
-  sizes = c(2:ncol(train_dat)), 
+  sizes = c(3:ncol(train_dat)), 
   x = train_dat,
   y = sf::st_drop_geometry(train)$occurrence,
   rfeControl = ctrl)
@@ -105,7 +117,8 @@ cv_model <- train(
 
 sub <- train_dat[,predictors(lmProfile)]
 
-# rm(train1, train_dat)
+rm(train1, train_dat)
+
 # now fit the model just using glmnet::glment in order that we can get the 
 # type of response for type='prob' rather than log odds or labelled classes
 # which we need to work with terra::predict. 
@@ -119,203 +132,52 @@ mod <- glmnet::glmnet(
 
 rm(cv_model)
 
+obs <- createPCNM_fitModel(
+    x = train, 
+    planar_proj = '+proj=laea +lon_0=-421.171875 +lat_0=-16.8672134 +datum=WGS84 +units=m +no_defs')
 
-################################################################################
-####        TRY AND INCORPORATE MORANS EIGENVECTOR MAPS INTO MODEL          ####
+mod <- obs$mod; cv_model <- obs$cv_model; pcnm <- obs$pcnm
 
-train_planar <- sf::st_transform(
-  train, '+proj=laea +lon_0=-421.171875 +lat_0=-16.8672134 +datum=WGS84 +units=m +no_defs')
+predictors <- c(predictors, pcnm)
 
-dis <- sf::st_distance(train_planar)
-dis <- apply(dis, 2, as.numeric)
-xypcnm <- vegan::pcnm(dis)
-xypcnm.df <- data.frame(xypcnm$vectors)
+rm(train)
+# get the variables to extract from the rasters for creating a matrix for 
+# predictions, glmnet predict is kind of wonky and needs exact matrix dimensions. 
 
-pcnmProfile <- caret::rfe( 
-  method = 'glmnet', # https://doi.org/10.1111/gean.12054
-  x = xypcnm.df, 
-  sizes = 1:5,
-  sf::st_drop_geometry(train)$occurrence,
-  rfeControl = ctrl, 
-  index = indices_knndm$indx_train
-  )
+vars <- rownames(coef(mod)); vars <- vars[2:length(vars)]
 
-preds <- cbind(
-  sub, 
-  xypcnm.df[,predictors(pcnmProfile)]
-  )
-
-rm(pcnmProfile)
-
-# trying to refit the glmnet
-
-fullProfile <- caret::rfe(
-  method = 'glmnet',
-  sizes = c(2:ncol(preds)), 
-  x = preds,
-  y = sf::st_drop_geometry(train)$occurrence,
-  rfeControl = ctrl)
-
-cv_model <- train(
-  x = preds,
-  y = sf::st_drop_geometry(train)$occurrence,
-  method = "glmnet", 
-  family = 'binomial', 
-  index = indices_knndm$indx_train) 
-
-mod <- glmnet::glmnet(
-  x = preds, 
-  sf::st_drop_geometry(train)$occurrence, 
-  family = 'binomial', 
-  keep = TRUE,
-  lambda = cv_model$bestTune$lambda, alpha = cv_model$bestTune$alpha
+# now we need just the COORDINATES FOR TEST and will extract the data from
+# this set of predictors to them... 
+predict_mat <- predictors[[vars]]
+predict_mat <- as.matrix(
+  terra::extract(predict_mat, test, ID = FALSE) 
 )
 
-# get model information below
-coef(mod)
-varImp(mod, mod$lambda)
+cm <- caret::confusionMatrix(
+  data = as.factor(predict(mod, newx = predict_mat, type = 'class')), 
+  reference = test$occurrence,
+  positive="1")
 
-
-# to predict onto the confusion matrix, we now need to add the PCNM/MEM values
-# for the relevant layers onto our independent test data, this will require us
-# to create PCNM raster surfaces
-
-predict_mat <- as.matrix(preds[, predictors(fullProfile)])
-
-confusionMatrix(
-  as.factor(predict(mod, newx = predict_mat, type = 'class')), 
-  as.factor(test$occurrence))
-
-ob <- predict(mod, newx = predict_mat)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# determine whether there is strong evidence for spatial autocorrelation in the
-# residuals. 
-fitted_values <- predict(mod, newx = as.matrix(sub))
-residuals <- (as.numeric( sf::st_drop_geometry(train$occurrence))-1) - fitted_values
-
-nb <- spdep::knearneigh(sf::st_as_sf(train, coords = c('x', 'y'), crs = 4326) , 4) 
-# now create a neighbor object between the points
-lw <- spdep::nb2listwdist(spdep::knn2nb(nb), train, type="idw")
-morI <- spdep::moran.test(residuals, lw)
-
-
-rm(predict_mat, residuals, nb, lw, sub, fitted_values)
+rm(predict_mat)
 ## Predict our model onto a gridded surface (raster) ## This will allow for downstream
 # use with the rest of the safeHavens workflow. 
-
-preds <- predictors[[predictors(lmProfile)]]
+preds <- predictors[[vars]]
 predfun <- function(model, data, ...){
   predict(model, newx=as.matrix(data), type = 'response')
 }
 
 rast_cont <- terra::predict(preds, model = mod, fun=predfun, na.rm=TRUE)
 
-rm(lmProfile, predfun, preds)
+rm(lmProfile, predfun, preds, vars)
 
-# determine a threshold for creating a binomial map of the species distribution
-# we want to predict MORE habitat than exists, so we want to maximize sensitivity
-# in our classification. 
 
-test.sf <- sf::st_as_sf(test, coords = c('x', 'y'), crs = 4326) |>
-  dplyr::select(occurrence)
+ob <- postProcessSDM(rast_cont, thresh_metric = 'sensitivity', quant_amt = 0.25)
+f_rasts <- ob$f_rasts
+thresh <- ob$thresh
 
-test.sf <- terra::extract(rast_cont, test.sf, bind = TRUE) |>
-  sf::st_as_sf() |>
-  sf::st_drop_geometry() 
+terra::plot(f_rasts)
+writeSDMresults(
+  file.path( 'results', 'SDM'), 'Bradypus_test')
 
-eval_ob <- dismo::evaluate(
-  p = test.sf[test.sf$occurrence==1,'s0'],
-  a = test.sf[test.sf$occurrence==0,'s0']
-)
-thresh <- dismo::threshold(eval_ob)
-cut <- thresh[['sensitivity']] # ARGUMENT TO FN @PARAM 
 
-m <- matrix( # use this to reclassiy data to a binary raster
-  c( # but more simply, turn the absences into NA for easier masking later on? 
-    0, cut, NA,
-    cut, 1, 1), 
-  ncol = 3, byrow= TRUE)
 
-rast_binary <- terra::classify(rast_cont, m) # create a YES/NO raster
-
-terra::plot(rast_binary)
-terra::points(x[x$occurrence==1,])
-
-rm(eval_ob, cut, m, test, test.sf)
-
-# use sf::st_buffer() to only keep habitat within XXX distance from known populations
-# we'll use another set of cv-folds based on all occurrence data 
-# Essentially, we will see how far the nearest neighbor is from each point in each
-# fold
-
-nn_distribution <- function(x, y){
-  ob <- unlist(x)
-  
-  nf <- sf::st_distance(
-    y[sf::st_nearest_feature(y[ob, ]), ],
-    y[ob, ], by_element = TRUE
-  )
-}
-
-train_pres <- x[ x$occurrence==1, ]
-pres <- sf::st_transform(
-  train_pres, 
-  '+proj=laea +lon_0=-421.171875 +lat_0=-16.8672134 +datum=WGS84 +units=m +no_defs')
-indices_knndm <- CAST::knndm(pres, predictors, k=10)
-
-ob <- lapply(indices_knndm[['indx_train']], nn_distribution,y = pres)
-dists <- median(unlist(lapply(ob, quantile, 0.25))) # ARGUMENT TO FN @PARAM 
-
-within_dist <- sf::st_buffer(pres, dists) |>
-  dplyr::summarize(geometry = sf::st_union(geometry)) |>
-  sf::st_simplify() |>
-  sf::st_transform(terra::crs(rast_binary)) |>
-  terra::vect()
-
-rast_clipped <- terra::mask(rast_binary, within_dist)
-
-terra::plot(rast_binary)
-terra::points(train_pres, col = 'red')
-terra::plot(rast_clipped)
-terra::points(train_pres, col = 'red')
-
-rm(train_pres, nn_distribution, indices_knndm, ob, dists, within_dist, pres)
-
-##### WE NEED TO SAVE A WIDE NUMBER OF OBJECTS   ####
-
-# 1) MORANS I
-morI
-# 2) THE MODEL
-mod # saveRDS()
-
-# 2a) MODEL COEFFICIENTS
-
-# 3) CONTINOUS RASTERS PREDS
-rast_cont
-# 4) BINARY RASTER
-rast_binary
-# 4) CLIPPED TO DISTANCE RASTER
-rast_clipped
-# 5) evaluation statistics - from normal old school split. 
-
-# 6) THRESHOLD VALUES. 
-thresh
-
-# 7) THINNED DATA FOR TRAINING MODEL
-
-# 8) CV FOLDS 
-
-rm(thresh, morI, mod, rast_cont, rast_binary, rast_clipped)

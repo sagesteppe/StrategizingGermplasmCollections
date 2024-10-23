@@ -1,7 +1,7 @@
 "Metric","Value"
-"kappa",0.61434457
-"spec_sens",0.61434457
-"no_omission",0.30076718
-"prevalence",0.45703751
-"equal_sens_spec",0.54668461
-"sensitivity",0.35662461
+"kappa",0.66369376
+"spec_sens",0.66369376
+"no_omission",0.28889254
+"prevalence",0.48464966
+"equal_sens_spec",0.56226236
+"sensitivity",0.48464966

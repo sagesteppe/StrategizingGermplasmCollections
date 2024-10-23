@@ -2,6 +2,7 @@
 setwd('~/Documents/assoRted/StrategizingGermplasmCollections')
 source('./scripts/createPCNM_fitModel.R')
 source('./scripts/WriteSDMresults.R')
+source('./scripts/postProcessSDM.R')
 ################################################################################
 
 x <- read.csv(file.path(system.file(package="dismo"), 'ex', 'bradypus.csv'))
@@ -13,9 +14,30 @@ files <- list.files(
   pattern = 'grd',  full.names=TRUE )
 predictors <- terra::rast(files) # import the independent variables
 
+
+# Step 0 define spatial extent of study area. 
+
+pts_plan <-   sf::st_transform(
+  sf::st_as_sf(x, coords = c('lon', 'lat'), crs = 4326), 
+  '+proj=laea +lon_0=-421.171875 +lat_0=-16.8672134 +datum=WGS84 +units=m +no_defs')
+
+bb <- sf::st_bbox(pts_plan)
+buff_dist <- as.numeric( # here we get the mean distance of the XY distances of the bb
+  ((bb[3] - bb[1]) + (bb[4] - bb[2])) / 2 
+) / 2 # the mean distance * 0.25 is how much we will enlarge the area of analysis. 
+
+bb1 <- sf::st_union(pts_plan) |>
+  sf::st_buffer(buff_dist) |>
+  terra::vect() |>
+  terra::project(terra::crs(predictors)) |>
+  terra::ext()
+
+p1 <- terra::mask(predictors, bb1)
+
+rm(pts_plan, bb, buff_dist, bb1)
 # Step 1 Select Background points - let's use SDM package envidist for this
 
-pa <- sdm::background(x = predictors, n = nrow(x), sp = x, method = 'eDist') |>
+pa <- sdm::background(x = p1, n = nrow(x), sp = x, method = 'eDist') |>
   dplyr::select(lon = x,  lat = y)
 
 pa$occurrence <- 0 ; x$occurrence <- 1
@@ -26,7 +48,7 @@ x <- dplyr::bind_rows(x, pa) |> # combine the presence and pseudoabsence points
 brady.df <- data.frame(Species = 'Species', data.frame(sf::st_coordinates(x)))
 
 dists <- sf::st_distance(x[ sf::st_nearest_feature(x), ], x, by_element = TRUE)
-thinD <- as.numeric(quantile(dists, c(0.1)) / 1000) # ARGUMENT TO FN @PARAM 
+thinD <- as.numeric(quantile(dists, c(0.05)) / 1000) # ARGUMENT TO FN @PARAM 
 
 thinned <- spThin::thin(
   loc.data = brady.df, thin.par = thinD,
@@ -59,10 +81,11 @@ train <- x[index,]
 test <- x[-index,]
 
 rm(index)
-# Step 2 Develop CV folds for steps 3 and 4
+
+# Develop CV folds for modelling
 indices_knndm <- CAST::knndm(train, predictors, k=5)
 
-# Step 3. Recursive feature elimination using CAST developed folds
+# Recursive feature elimination using CAST developed folds
 
 train_dat <- sf::st_drop_geometry(train[, -which(names(train) %in% c("occurrence"))])
 ctrl <- caret::rfeControl(
@@ -146,109 +169,15 @@ predfun <- function(model, data, ...){
 rast_cont <- terra::predict(preds, model = mod, fun=predfun, na.rm=TRUE)
 
 rm(lmProfile, predfun, preds, vars)
-# determine a threshold for creating a binomial map of the species distribution
-# we want to predict MORE habitat than exists, so we want to maximize sensitivity
-# in our classification. 
-
-test.sf <- sf::st_as_sf(test, coords = c('x', 'y'), crs = 4326) |>
-  dplyr::select(occurrence)
-
-test.sf <- terra::extract(rast_cont, test.sf, bind = TRUE) |>
-  sf::st_as_sf() |>
-  sf::st_drop_geometry() 
-
-eval_ob <- dismo::evaluate(
-  p = test.sf[test.sf$occurrence==1,'s0'],
-  a = test.sf[test.sf$occurrence==0,'s0']
-)
-thresh <- dismo::threshold(eval_ob)
-cut <- thresh[['sensitivity']] # ARGUMENT TO FN @PARAM 
-
-m <- matrix( # use this to reclassiy data to a binary raster
-  c( # but more simply, turn the absences into NA for easier masking later on? 
-    0, cut, NA,
-    cut, 1, 1), 
-  ncol = 3, byrow= TRUE)
-
-rast_binary <- terra::classify(rast_cont, m) # create a YES/NO raster
-
-rm(eval_ob, cut, m, test, test.sf)
-
-# use sf::st_buffer() to only keep habitat within XXX distance from known populations
-# we'll use another set of cv-folds based on all occurrence data 
-# Essentially, we will see how far the nearest neighbor is from each point in each
-# fold
-
-nn_distribution <- function(x, y){
-  ob <- unlist(x)
-  
-  nf <- sf::st_distance(
-    y[sf::st_nearest_feature(y[ob, ]), ],
-    y[ob, ], by_element = TRUE
-  )
-}
-
-pres <- x[ x$occurrence==1, ]
-pres <- sf::st_transform(
-  pres, 
-  '+proj=laea +lon_0=-421.171875 +lat_0=-16.8672134 +datum=WGS84 +units=m +no_defs')
-indices_knndm <- CAST::knndm(pres, predictors, k=10)
-
-nn_dist <- lapply(indices_knndm[['indx_train']], nn_distribution, y = pres)
-dists <- unlist(list(lapply(nn_dist, quantile, 0.25))) # ARGUMENT TO FN @PARAM 
-
-within_dist <- sf::st_buffer(pres, median(dists)) |>
-  dplyr::summarize(geometry = sf::st_union(geometry)) |>
-  sf::st_simplify() |>
-  sf::st_transform(terra::crs(rast_binary)) |>
-  terra::vect()
-
-rast_clipped <- terra::mask(rast_binary, within_dist)
-
-rm(nn_dist, indices_knndm, nn_distribution, within_dist)
-####### IF WE HAVE POINTS WHICH ARE FLOATING IN SPACE - I.E. POINTS W/O  
-# SUITABLE HABITAT MARKED, THEN LET'S ADD the same amount of suitable habitat 
-# to each of them, that was used as the buffer for clipping suitable habitat to the
-# points above. 
-
-pres <- sf::st_transform(pres, terra::crs(rast_binary))
-outside_binary <- terra::extract(rast_binary, pres, bind = TRUE) |>
-  sf::st_as_sf() |>
-  dplyr::filter(is.na(s0)) |>
-  sf::st_transform(
-    '+proj=laea +lon_0=-421.171875 +lat_0=-16.8672134 +datum=WGS84 +units=m +no_defs') |>
-  sf::st_buffer(min(dists)) |>
-  dplyr::summarize(geometry = sf::st_union(geometry)) |>
-  dplyr::mutate(occurrence = 1) |>
-  terra::vect() |>
-  terra::project(terra::crs(rast_binary)) |>
-  terra::rasterize( rast_binary, field = 'occurrence')
-
-rast_clipped_supplemented <- max(rast_clipped, outside_binary, na.rm = TRUE)
-
-rm(dists)
 
 
+ob <- postProcessSDM(rast_cont, thresh_metric = 'sensitivity', quant_amt = 0.25)
+f_rasts <- ob$f_rasts
+thresh <- ob$thresh
 
-
-
-
-
-
-
-
-##########   COMBINE ALL RASTERS TOGETHER FOR A FINAL PRODUCT      #############
-f_rasts <- c(rast_cont, rast_binary, rast_clipped, rast_clipped_supplemented)
-names(f_rasts) <- c('Predictions', 'Threshold', 'Clipped', 'Supplemented')
 terra::plot(f_rasts)
-
-rm(outside_binary, pres, rast_clipped_supplemented, rast_clipped, rast_binary)
-
-
 writeSDMresults(
   file.path( 'results', 'SDM'), 'Bradypus_test')
 
-
-rm(thresh, mod, rast_cont, rast_binary, rast_clipped)
 
 
