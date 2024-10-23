@@ -145,6 +145,8 @@ preds <- cbind(
   xypcnm.df[,predictors(pcnmProfile)]
   )
 
+rm(pcnmProfile)
+
 # trying to refit the glmnet
 
 fullProfile <- caret::rfe(
@@ -172,6 +174,12 @@ mod <- glmnet::glmnet(
 # get model information below
 coef(mod)
 varImp(mod, mod$lambda)
+
+
+# to predict onto the confusion matrix, we now need to add the PCNM/MEM values
+# for the relevant layers onto our independent test data, this will require us
+# to create PCNM raster surfaces
+
 predict_mat <- as.matrix(preds[, predictors(fullProfile)])
 
 confusionMatrix(

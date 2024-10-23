@@ -9,9 +9,8 @@ x <- dplyr::distinct(x, .keep_all = )
 files <- list.files(
   path = file.path(system.file(package="dismo"), 'ex'), 
   pattern = 'grd',  full.names=TRUE )
-predictors <- terra::rast(files) # import the indepedent variables
-predictors$x <- terra::init(predictors, fun = 'x') 
-predictors$y <- terra::init(predictors, fun = 'y') 
+predictors <- terra::rast(files) # import the independent variables
+
 # Step 1 Select Background points - let's use SDM package envidist for this
 
 pa <- sdm::background(x = predictors, n = nrow(x), sp = x, method = 'eDist') |>
@@ -106,6 +105,7 @@ cv_model <- train(
 sub <- train_dat[,predictors(lmProfile)]
 
 # rm(train1, train_dat)
+
 # now fit the model just using glmnet::glment in order that we can get the 
 # type of response for type='prob' rather than log odds or labelled classes
 # which we need to work with terra::predict. 
@@ -118,6 +118,7 @@ mod <- glmnet::glmnet(
 )
 
 rm(cv_model)
+###################
 
 train_planar <- sf::st_transform(
   train, '+proj=laea +lon_0=-421.171875 +lat_0=-16.8672134 +datum=WGS84 +units=m +no_defs')
@@ -130,22 +131,19 @@ xypcnm.df <- data.frame(xypcnm$vectors)
 pcnmProfile <- caret::rfe( 
   method = 'glmnet', # https://doi.org/10.1111/gean.12054
   x = xypcnm.df, 
-  sizes = 1:5,
+  sizes = 1:4,
   sf::st_drop_geometry(train)$occurrence,
   rfeControl = ctrl, 
   index = indices_knndm$indx_train
   )
 
-preds <- cbind(
-  # occurrence = factor( sf::st_drop_geometry(train$occurrence)), 
-  sub, 
-  xypcnm.df[,predictors(pcnmProfile)]
-  )
 
+xypcnm.df <- xypcnm.df[,predictors(pcnmProfile)]
+preds <- cbind(sub, xypcnm.df)
+#rm(pcnmProfile)
 # trying to refit the glmnet
 
-
-cv_model <- train(
+cv_model <- train( # let's extract the model performance for the top alpha/lambda info here. 
   x = preds, 
   sf::st_drop_geometry(train)$occurrence, 
   method = "glmnet", 
@@ -160,96 +158,41 @@ mod <- glmnet::glmnet(
   lambda = cv_model$bestTune$lambda, alpha = cv_model$bestTune$alpha
 )
 
-# get model information below
-coef(mod)
-varImp(mod, mod$lambda)
+# to predict onto the confusion matrix, we now need to add the PCNM/MEM values
+# for the relevant layers onto our independent test data, this will require us
+# to create PCNM raster surfaces
 
-confusionMatrix(
-  as.factor(predict(mod, newx = predict_mat, type = 'class')), 
-  as.factor(test$occurrence))
+df <- setNames(
+  data.frame(
+    cbind(sf::st_coordinates(train), xypcnm.df[,1])),
+  c('X', 'Y', 'PCNM'))
 
-ob <- predict(mod, newx = predict_mat)
+xypcnm.sf <- cbind(xypcnm.df, dplyr::select(train, geometry)) |> 
+  sf::st_as_sf()
 
+fit <- fields::Tps(sf::st_coordinates(xypcnm.sf), xypcnm.sf$PCNM82)
+p <- terra::rast(predictors[[1]])
+mem1 <- terra::interpolate(p, fit)
+mem1 <- terra::mask(mem1, predictors[[1]])
 
+pcnm2raster <- function(x){
+  
+  fit <- fields::Tps(sf::st_coordinates(xypcnm.sf), x)
+  p <- terra::rast(predictors[[1]])
+  pcnm <- terra::interpolate(p, fit)
+  pcnm <- terra::mask(pcnm, predictors[[1]])
+  
+  return(pcnm)
+}
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-############ attempt with direct incorporation of the spatial covariance. ######
-library(spmodel)
-
-sub <- sf::st_transform(
-  sub, 
-  '+proj=laea +lon_0=-421.171875 +lat_0=-16.8672134 +datum=WGS84 +units=m +no_defs')
-
-bin_mod <- spmodel::spglm(
-  formula = occurrence ~ x + bio16 + biome + bio7 + bio17 + bio5,
-  family = "binomial",
-  data = sub,
-  spcov_type = "none"
-)
-
-bin_spmod <- spmodel::spglm(
-  formula = occurrence ~  bio16,
-  family = "binomial",
-  data = sub,
-  spcov_type = "spherical"
-)
-
-bin_spmod_anis <- spglm(
-  formula = occurrence ~ x + bio16 + biome + bio7 + bio17 + bio5,
-  family = "binomial",
-  data = sub,
-  spcov_type = "spherical",
-  anisotropy = TRUE
-)
-
-AIC(bin_mod, bin_spmod, bin_spmod_anis)
-AUROC(bin_spmod)
-
-summary(bin_spmod)
+pcnm <- lapply(xypcnm.df, pcnm2raster)
+pcnm <- terra::rast(pcnm)
 
 
 # get model information below
 coef(mod)
 varImp(mod, mod$lambda)
-predict_mat <- as.matrix(test[, predictors(lmProfile)])
+predict_mat <- as.matrix(preds)
 
 confusionMatrix(
   as.factor(predict(mod, newx = predict_mat, type = 'class')), 
@@ -259,7 +202,7 @@ ob <- predict(mod, newx = predict_mat)
 
 # determine whether there is strong evidence for spatial autocorrelation in the
 # residuals. 
-fitted_values <- predict(mod, newx = as.matrix(sub))
+fitted_values <- predict(mod, newx = as.matrix(preds))
 residuals <- (as.numeric( sf::st_drop_geometry(train$occurrence))-1) - fitted_values
 
 nb <- spdep::knearneigh(sf::st_as_sf(train, coords = c('x', 'y'), crs = 4326) , 4) 
@@ -375,3 +318,52 @@ thresh
 # 8) CV FOLDS 
 
 rm(thresh, morI, mod, rast_cont, rast_binary, rast_clipped)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+################################################################################
+######                       TERRA INTERPOLATE WEIRDNESS                  ######
+################################################################################
+
+x <- read.csv(file.path(system.file(package="dismo"), 'ex', 'bradypus.csv'))
+x <- x[,c('lon', 'lat')]
+x <- dplyr::distinct(x, .keep_all = ) |>
+  sf::st_as_sf(coords = c('lon', 'lat'), crs = 4326)
+
+files <- list.files(
+  path = file.path(system.file(package="dismo"), 'ex'), 
+  pattern = 'grd',  full.names=TRUE )
+
+predictors <- terra::rast(files) # import the independent variables
+
+train_planar <- sf::st_transform(
+  x, '+proj=laea +lon_0=-421.171875 +lat_0=-16.8672134 +datum=WGS84 +units=m +no_defs')
+
+dis <- sf::st_distance(train_planar)
+dis <- apply(dis, 2, as.numeric)
+xypcnm <- vegan::pcnm(dis)
+xypcnm.df <- data.frame(xypcnm$vectors)
+
+fit <- fields::Tps(sf::st_coordinates(x), xypcnm.df$PCNM2)
+r <- terra::rast(predictors)
+mem1 <- terra::interpolate(r, fit, FUN = 'predict')
+mem1 <- terra::mask(mem1, predictors)
+
+terra::plot(mem1[[1]])
+terra::points(sf::st_coordinates(x))
