@@ -1,4 +1,5 @@
 # install.packages('dismo', 'spdep', 'spThin', 'glmnet', 'caret', 'CAST')
+setwd('~/Documents/assoRted/StrategizingGermplasmCollections')
 ################################################################################
 
 x <- read.csv(file.path(system.file(package="dismo"), 'ex', 'bradypus.csv'))
@@ -51,23 +52,11 @@ x <- terra::extract(predictors, x, bind = TRUE) |>
 # calculate MORANS I to determine the effect of spatial
 # autocorrelation on the model. 
 
-index <- unlist(caret::createDataPartition(x$occurrence, p=0.85)) # @ ARGUMENT TO FN @PARAM
+index <- unlist(caret::createDataPartition(x$occurrence, p=0.8)) # @ ARGUMENT TO FN @PARAM
 train <- x[index,]
 test <- x[-index,]
 
 rm(index)
-# Fit a simple model to the data and determine whether Spatial autocorrelation is
-# present in the residuals. If so, we will apply spThin. 
-
-model <- glm(factor(occurrence) ~ . , data = sf::st_drop_geometry(train), family = 'binomial')
-nb <- spdep::knearneigh(train, 4) # now create a neighbor object between the points
-lw <- spdep::nb2listwdist(spdep::knn2nb(nb), train, type="idw")
-morI <- spdep::moran.test(model$residuals, lw)
-
-predicted <- predict(model, newdata = train, type = 'response') 
-residuals <- (as.numeric(train$occurrence) - 1) - predicted
-
-rm(nb, lw, model, predicted, residuals)
 # Step 2 Develop CV folds for steps 3 and 4
 indices_knndm <- CAST::knndm(train, predictors, k=5)
 
@@ -103,7 +92,7 @@ cv_model <- train(
 
 sub <- train_dat[,predictors(lmProfile)]
 
-# rm(train1, train_dat)
+rm(train1, train_dat)
 
 # now fit the model just using glmnet::glment in order that we can get the 
 # type of response for type='prob' rather than log odds or labelled classes
@@ -117,90 +106,105 @@ mod <- glmnet::glmnet(
 )
 
 rm(cv_model)
-###################
+###################   Create PCNM Surfaces    ##################
 
-train_planar <- sf::st_transform(
-  train, '+proj=laea +lon_0=-421.171875 +lat_0=-16.8672134 +datum=WGS84 +units=m +no_defs') 
-
-dis <- sf::st_distance(train_planar)
-dis <- apply(dis, 2, as.numeric)
-xypcnm <- vegan::pcnm(dis)
-xypcnm.df <- data.frame(xypcnm$vectors)[,1:20]
-
-pcnmProfile <- caret::rfe( 
-  method = 'glmnet', # https://doi.org/10.1111/gean.12054
-  x = xypcnm.df, 
-  sizes = 1:5,
-  sf::st_drop_geometry(train)$occurrence,
-  rfeControl = ctrl, 
-  index = indices_knndm$indx_train
+createPCNM_fitModel <- function(x, planar_proj){
+  
+  train_planar <- sf::st_transform(x, planar_proj) 
+  
+  dis <- sf::st_distance(train_planar)
+  dis <- apply(dis, 2, as.numeric)
+  xypcnm <- vegan::pcnm(dis)
+  xypcnm.df <- data.frame(xypcnm$vectors)[,1:20]
+  
+  pcnmProfile <- caret::rfe( 
+    method = 'glmnet', # https://doi.org/10.1111/gean.12054
+    x = xypcnm.df, 
+    sizes = 1:5,
+    sf::st_drop_geometry(x)$occurrence,
+    rfeControl = ctrl, 
+    index = indices_knndm$indx_train
   )
-
-
-xypcnm.df <- xypcnm.df[,caret::predictors(pcnmProfile)]
-preds <- cbind(sub, xypcnm.df)
-
-if(is.numeric(xypcnm.df)){
-  colnames(preds)[length(preds)] <- caret::predictors(pcnmProfile)}
-
-rm(xypcnm, dis, train_planar)
-# trying to refit the glmnet
-
-cv_model <- train( # let's extract the model performance for the top alpha/lambda info here. 
-  x = preds, 
-  sf::st_drop_geometry(train)$occurrence, 
-  method = "glmnet", 
-  family = 'binomial', 
-  index = indices_knndm$indx_train) 
-
-mod <- glmnet::glmnet(
-  x = preds, 
-  sf::st_drop_geometry(train)$occurrence, 
-  family = 'binomial', 
-  keep = TRUE,
-  lambda = cv_model$bestTune$lambda, alpha = cv_model$bestTune$alpha
-)
-
-# to predict onto the confusion matrix, we now need to add the PCNM/MEM values
-# for the relevant layers onto our independent test data, this will require us
-# to create PCNM raster surfaces
-
-xypcnm.sf <- cbind(xypcnm.df, dplyr::select(train, geometry)) |> 
-  sf::st_as_sf()
-
-
-if(is.data.frame(xypcnm.df)){
-  pcnm2raster <- function(x){
+  
+  xypcnm.df <- xypcnm.df[,caret::predictors(pcnmProfile)]
+  preds <- cbind(sub, xypcnm.df)
+  
+  if(is.numeric(xypcnm.df)){
+    colnames(preds)[length(preds)] <- caret::predictors(pcnmProfile)}
+  
+  rm(xypcnm, dis, train_planar)
+  # trying to refit the glmnet
+  
+  cv_model <- caret::train( # let's extract the model performance for the top alpha/lambda info here. 
+    x = preds, 
+    sf::st_drop_geometry(x)$occurrence, 
+    method = "glmnet", 
+    metric = 'Accuracy',
+    family = 'binomial', 
+    index = indices_knndm$indx_train) 
+  
+  mod <- glmnet::glmnet(
+    x = preds, 
+    sf::st_drop_geometry(x)$occurrence, 
+    family = 'binomial', 
+    keep = TRUE,
+    lambda = cv_model$bestTune$lambda, alpha = cv_model$bestTune$alpha
+  )
+  
+  # to predict onto the confusion matrix, we now need to add the PCNM/MEM values
+  # for the relevant layers onto our independent test data, this will require us
+  # to create PCNM raster surfaces
+  
+  xypcnm.sf <- cbind(xypcnm.df, dplyr::select(x, geometry)) |> 
+    sf::st_as_sf()
+  
+  if(is.data.frame(xypcnm.df)){
+    pcnm2raster <- function(x){
+      
+      fit <- fields::Tps(sf::st_coordinates(xypcnm.sf), x)
+      p <- terra::rast(predictors[[1]])
+      pcnm <- terra::interpolate(p, fit)
+      pcnm <- terra::mask(pcnm, predictors[[1]])
+      
+      return(pcnm)
+    }
     
-    fit <- fields::Tps(sf::st_coordinates(xypcnm.sf), x)
+    pcnm <- lapply(xypcnm.df, pcnm2raster)
+    pcnm <- terra::rast(pcnm)
+    names(pcnm) <- caret::predictors(pcnmProfile)
+    
+  } else if(is.numeric(xypcnm.df)){
+    
+    fit <- fields::Tps(sf::st_coordinates(xypcnm.sf), xypcnm.df)
     p <- terra::rast(predictors[[1]])
     pcnm <- terra::interpolate(p, fit)
     pcnm <- terra::mask(pcnm, predictors[[1]])
+    names(pcnm) <- caret::predictors(pcnmProfile)
     
-    return(pcnm)
-  }
+    rm(fit, p)
+  }  
   
-  pcnm <- lapply(xypcnm.df, pcnm2raster)
-  pcnm <- terra::rast(pcnm)
-  names(pcnm) <- caret::predictors(pcnmProfile)
+  rm(xypcnm.sf, pcnm2raster, xypcnm.df, pcnmProfile)
+  
+  return(list(
+    mod = mod,
+    cv_model = cv_model, 
+    pcnm = pcnm))
+}
 
-} else if(is.numeric(xypcnm.df)){
-  
-  fit <- fields::Tps(sf::st_coordinates(xypcnm.sf), xypcnm.df)
-  p <- terra::rast(predictors[[1]])
-  pcnm <- terra::interpolate(p, fit)
-  pcnm <- terra::mask(pcnm, predictors[[1]])
-  names(pcnm) <- caret::predictors(pcnmProfile)
-  
-  rm(fit, p)
-}  
+obs <- 
+  createPCNM_fitModel(
+    x = train, 
+    planar_proj = '+proj=laea +lon_0=-421.171875 +lat_0=-16.8672134 +datum=WGS84 +units=m +no_defs')
+
+mod <- obs$mod; cv_model <- obs$cv_model; pcnm <- obs$pcnm
 
 predictors <- c(predictors, pcnm)
-terra::plot(predictors)
 
-rm(xypcnm.sf, pcnm2raster, xypcnm.df, pcnmProfile)
+rm(train)
+# get the variables to extract from the rasters for creating a matrix for 
+# predictions, glmnet predict is kind of wonky and needs exact matrix dimensions. 
 
-# get model information below
 vars <- rownames(coef(mod)); vars <- vars[2:length(vars)]
 
 # now we need just the COORDINATES FOR TEST and will extract the data from
@@ -210,24 +214,14 @@ predict_mat <- as.matrix(
   terra::extract(predict_mat, test, ID = FALSE) 
 )
 
-cm <- confusionMatrix(
-  as.factor(predict(mod, newx = predict_mat, type = 'class')), 
-  as.factor(test$occurrence))
+cm <- caret::confusionMatrix(
+  data = as.factor(predict(mod, newx = predict_mat, type = 'class')), 
+  reference = test$occurrence,
+  positive="1")
 
-# determine whether there is strong evidence for spatial autocorrelation in the
-# residuals. 
-fitted_values <- predict(mod, newx = as.matrix(preds))
-residuals <- (as.numeric( sf::st_drop_geometry(train$occurrence))-1) - fitted_values
-
-nb <- spdep::knearneigh(sf::st_as_sf(train, coords = c('x', 'y'), crs = 4326) , 4) 
-# now create a neighbor object between the points
-lw <- spdep::nb2listwdist(spdep::knn2nb(nb), train, type="idw")
-morI <- spdep::moran.test(residuals, lw)
-
-rm(predict_mat, residuals, nb, lw, sub, fitted_values)
+rm(predict_mat)
 ## Predict our model onto a gridded surface (raster) ## This will allow for downstream
 # use with the rest of the safeHavens workflow. 
-
 preds <- predictors[[vars]]
 predfun <- function(model, data, ...){
   predict(model, newx=as.matrix(data), type = 'response')
@@ -235,8 +229,7 @@ predfun <- function(model, data, ...){
 
 rast_cont <- terra::predict(preds, model = mod, fun=predfun, na.rm=TRUE)
 
-rm(lmProfile, predfun, preds)
-
+rm(lmProfile, predfun, preds, vars)
 # determine a threshold for creating a binomial map of the species distribution
 # we want to predict MORE habitat than exists, so we want to maximize sensitivity
 # in our classification. 
@@ -262,9 +255,6 @@ m <- matrix( # use this to reclassiy data to a binary raster
   ncol = 3, byrow= TRUE)
 
 rast_binary <- terra::classify(rast_cont, m) # create a YES/NO raster
-
-terra::plot(rast_binary)
-terra::points(x[x$occurrence==1,])
 
 rm(eval_ob, cut, m, test, test.sf)
 
@@ -299,7 +289,7 @@ within_dist <- sf::st_buffer(pres, median(dists)) |>
 
 rast_clipped <- terra::mask(rast_binary, within_dist)
 
-rm(train_pres, nn_dist, indices_knndm, nn_distribution, within_dist)
+rm(nn_dist, indices_knndm, nn_distribution, within_dist)
 ####### IF WE HAVE POINTS WHICH ARE FLOATING IN SPACE - I.E. POINTS W/O  
 # SUITABLE HABITAT MARKED, THEN LET'S ADD the same amount of suitable habitat 
 # to each of them, that was used as the buffer for clipping suitable habitat to the
@@ -320,6 +310,7 @@ outside_binary <- terra::extract(rast_binary, pres, bind = TRUE) |>
 
 rast_clipped_supplemented <- max(rast_clipped, outside_binary, na.rm = TRUE)
 
+rm(dists)
 
 ##########   COMBINE ALL RASTERS TOGETHER FOR A FINAL PRODUCT      #############
 f_rasts <- c(rast_cont, rast_binary, rast_clipped, rast_clipped_supplemented)
@@ -328,36 +319,83 @@ terra::plot(f_rasts)
 
 rm(outside_binary, pres, rast_clipped_supplemented, rast_clipped, rast_binary)
 
-ctrl
-cv_model
 
-##### WE NEED TO SAVE A WIDE NUMBER OF OBJECTS   ####
+#' Save the results of SDMs from the 'fitPredictOperationalize' function in safeHavens
+#' 
+#' This function is used to write out a wide range of values from the 
+#' `fitPredictOperationalize` process. It will create multiple subdirectories 
+#' within a user specified path. 
+#' These include: 'Rasters' where a raster stack of the four final rasters will go, 
+#' Fitting' where the details of model fitting from Caret will be placed, 
+#' 'Models' where the final fit model will go, 'Evaluation' where all evaluation 
+#' statistics will be placed, 'Threshold' where results form dismo::threshold will
+#' be placed. 
+#' @param path a root path where each of 5 folders will be created, if they do not exist. 
+#' @param taxon the name of the taxonomic entity for which the models were created. 
+writeSDMresults <- function(path, taxon){
+  
+  dir.create(file.path(path, 'PCNM'), showWarnings = FALSE)
+  dir.create(file.path(path, 'Fitting'), showWarnings = FALSE)
+  dir.create(file.path(path, 'Model'), showWarnings = FALSE)
+  dir.create(file.path(path, 'Evaluation'), showWarnings = FALSE)
+  dir.create(file.path(path, 'Threshold'), showWarnings = FALSE)
+  dir.create(file.path(path, 'Raster'), showWarnings = FALSE)
+  
+  saveRDS( # all cross validation information
+    cv_model, 
+    file = file.path(path, 'Fitting', paste0(taxon, '-Fitting.rds'))   
+    ) 
+  
+  terra::writeRaster( # save the pcnm layers we created. 
+    pcnm, overwrite = TRUE, 
+    file = file.path(path, 'PCNM', paste0(taxon, '-PCNM.tif'))
+    ) 
+  
+  saveRDS( # save the final fitted model.
+    mod, 
+    file = file.path(path, 'Model', paste0(taxon, '-Model.rds'))
+    )
+  
+  write.csv( # save the model coefficients
+    data.frame(
+      Variable = row.names(as.data.frame(as.matrix(coef(mod)))), 
+      Coefficient = as.numeric(coef(mod))
+    ),  row.names = FALSE,
+    file = file.path(path, 'Model', paste0(taxon, '-Coefficients.csv'))
+  )
+  
+  write.csv( #  save confusion matrix from old school split. 
+    data.frame(t(cm$table)), row.names = FALSE, 
+    file = file.path(path, 'Evaluation', paste0(taxon, '-CMatrix.csv'))
+  ) 
+  
+  write.csv( # save the calculated evaluation metrics. 
+    data.frame(
+      Variable = names(cm$byClass),
+      Value = as.numeric(cm$byClass)
+    ), row.names = FALSE, 
+    file = file.path(path, 'Evaluation', paste0(taxon, '-Metrics.csv'))
+  )
+  
+  write.csv( # threshold information - make it tidy. 
+    data.frame(
+      Metric = colnames(thresh), 
+      Value = as.numeric(t(thresh))
+      ), row.names = FALSE,
+    file = file.path(path, 'Threshold', paste0(taxon, '-Threshold.csv'))
+  )
+  
+  terra::writeRaster( # save all final rasters
+    f_rasts, overwrite = TRUE, 
+    filename = file.path(path, 'Raster', paste0(taxon, '.tif'))
+  )
+}
 
-# 1) THE MODEL
-mod # saveRDS()
 
-# 2) MODEL COEFFICIENTS
-coef(mod)
-
-# 3) ALL RASTERS
-rast_cont
-
-# 4) evaluation statistics - from normal old school split. 
-cm
-
-# 5) THRESHOLD VALUES. 
-thresh
-
-# 6) THINNED DATA FOR TRAINING MODEL / CV FOLDS
-str(cv_model)
-
-
-# 8) PCNM layers. 
-
+writeSDMresults(
+  file.path( 'results', 'SDM'), 'Bradypus_test')
 
 
 rm(thresh, mod, rast_cont, rast_binary, rast_clipped)
-
-
 
 
