@@ -1,5 +1,7 @@
 # install.packages('dismo', 'spdep', 'spThin', 'glmnet', 'caret', 'CAST')
 setwd('~/Documents/assoRted/StrategizingGermplasmCollections')
+source('./scripts/createPCNM_fitModel.R')
+source('./scripts/WriteSDMresults.R')
 ################################################################################
 
 x <- read.csv(file.path(system.file(package="dismo"), 'ex', 'bradypus.csv'))
@@ -106,94 +108,8 @@ mod <- glmnet::glmnet(
 )
 
 rm(cv_model)
-###################   Create PCNM Surfaces    ##################
 
-createPCNM_fitModel <- function(x, planar_proj){
-  
-  train_planar <- sf::st_transform(x, planar_proj) 
-  
-  dis <- sf::st_distance(train_planar)
-  dis <- apply(dis, 2, as.numeric)
-  xypcnm <- vegan::pcnm(dis)
-  xypcnm.df <- data.frame(xypcnm$vectors)[,1:20]
-  
-  pcnmProfile <- caret::rfe( 
-    method = 'glmnet', # https://doi.org/10.1111/gean.12054
-    x = xypcnm.df, 
-    sizes = 1:5,
-    sf::st_drop_geometry(x)$occurrence,
-    rfeControl = ctrl, 
-    index = indices_knndm$indx_train
-  )
-  
-  xypcnm.df <- xypcnm.df[,caret::predictors(pcnmProfile)]
-  preds <- cbind(sub, xypcnm.df)
-  
-  if(is.numeric(xypcnm.df)){
-    colnames(preds)[length(preds)] <- caret::predictors(pcnmProfile)}
-  
-  rm(xypcnm, dis, train_planar)
-  # trying to refit the glmnet
-  
-  cv_model <- caret::train( # let's extract the model performance for the top alpha/lambda info here. 
-    x = preds, 
-    sf::st_drop_geometry(x)$occurrence, 
-    method = "glmnet", 
-    metric = 'Accuracy',
-    family = 'binomial', 
-    index = indices_knndm$indx_train) 
-  
-  mod <- glmnet::glmnet(
-    x = preds, 
-    sf::st_drop_geometry(x)$occurrence, 
-    family = 'binomial', 
-    keep = TRUE,
-    lambda = cv_model$bestTune$lambda, alpha = cv_model$bestTune$alpha
-  )
-  
-  # to predict onto the confusion matrix, we now need to add the PCNM/MEM values
-  # for the relevant layers onto our independent test data, this will require us
-  # to create PCNM raster surfaces
-  
-  xypcnm.sf <- cbind(xypcnm.df, dplyr::select(x, geometry)) |> 
-    sf::st_as_sf()
-  
-  if(is.data.frame(xypcnm.df)){
-    pcnm2raster <- function(x){
-      
-      fit <- fields::Tps(sf::st_coordinates(xypcnm.sf), x)
-      p <- terra::rast(predictors[[1]])
-      pcnm <- terra::interpolate(p, fit)
-      pcnm <- terra::mask(pcnm, predictors[[1]])
-      
-      return(pcnm)
-    }
-    
-    pcnm <- lapply(xypcnm.df, pcnm2raster)
-    pcnm <- terra::rast(pcnm)
-    names(pcnm) <- caret::predictors(pcnmProfile)
-    
-  } else if(is.numeric(xypcnm.df)){
-    
-    fit <- fields::Tps(sf::st_coordinates(xypcnm.sf), xypcnm.df)
-    p <- terra::rast(predictors[[1]])
-    pcnm <- terra::interpolate(p, fit)
-    pcnm <- terra::mask(pcnm, predictors[[1]])
-    names(pcnm) <- caret::predictors(pcnmProfile)
-    
-    rm(fit, p)
-  }  
-  
-  rm(xypcnm.sf, pcnm2raster, xypcnm.df, pcnmProfile)
-  
-  return(list(
-    mod = mod,
-    cv_model = cv_model, 
-    pcnm = pcnm))
-}
-
-obs <- 
-  createPCNM_fitModel(
+obs <- createPCNM_fitModel(
     x = train, 
     planar_proj = '+proj=laea +lon_0=-421.171875 +lat_0=-16.8672134 +datum=WGS84 +units=m +no_defs')
 
@@ -312,84 +228,21 @@ rast_clipped_supplemented <- max(rast_clipped, outside_binary, na.rm = TRUE)
 
 rm(dists)
 
+
+
+
+
+
+
+
+
+
 ##########   COMBINE ALL RASTERS TOGETHER FOR A FINAL PRODUCT      #############
 f_rasts <- c(rast_cont, rast_binary, rast_clipped, rast_clipped_supplemented)
 names(f_rasts) <- c('Predictions', 'Threshold', 'Clipped', 'Supplemented')
 terra::plot(f_rasts)
 
 rm(outside_binary, pres, rast_clipped_supplemented, rast_clipped, rast_binary)
-
-
-#' Save the results of SDMs from the 'fitPredictOperationalize' function in safeHavens
-#' 
-#' This function is used to write out a wide range of values from the 
-#' `fitPredictOperationalize` process. It will create multiple subdirectories 
-#' within a user specified path. 
-#' These include: 'Rasters' where a raster stack of the four final rasters will go, 
-#' Fitting' where the details of model fitting from Caret will be placed, 
-#' 'Models' where the final fit model will go, 'Evaluation' where all evaluation 
-#' statistics will be placed, 'Threshold' where results form dismo::threshold will
-#' be placed. 
-#' @param path a root path where each of 5 folders will be created, if they do not exist. 
-#' @param taxon the name of the taxonomic entity for which the models were created. 
-writeSDMresults <- function(path, taxon){
-  
-  dir.create(file.path(path, 'PCNM'), showWarnings = FALSE)
-  dir.create(file.path(path, 'Fitting'), showWarnings = FALSE)
-  dir.create(file.path(path, 'Model'), showWarnings = FALSE)
-  dir.create(file.path(path, 'Evaluation'), showWarnings = FALSE)
-  dir.create(file.path(path, 'Threshold'), showWarnings = FALSE)
-  dir.create(file.path(path, 'Raster'), showWarnings = FALSE)
-  
-  saveRDS( # all cross validation information
-    cv_model, 
-    file = file.path(path, 'Fitting', paste0(taxon, '-Fitting.rds'))   
-    ) 
-  
-  terra::writeRaster( # save the pcnm layers we created. 
-    pcnm, overwrite = TRUE, 
-    file = file.path(path, 'PCNM', paste0(taxon, '-PCNM.tif'))
-    ) 
-  
-  saveRDS( # save the final fitted model.
-    mod, 
-    file = file.path(path, 'Model', paste0(taxon, '-Model.rds'))
-    )
-  
-  write.csv( # save the model coefficients
-    data.frame(
-      Variable = row.names(as.data.frame(as.matrix(coef(mod)))), 
-      Coefficient = as.numeric(coef(mod))
-    ),  row.names = FALSE,
-    file = file.path(path, 'Model', paste0(taxon, '-Coefficients.csv'))
-  )
-  
-  write.csv( #  save confusion matrix from old school split. 
-    data.frame(t(cm$table)), row.names = FALSE, 
-    file = file.path(path, 'Evaluation', paste0(taxon, '-CMatrix.csv'))
-  ) 
-  
-  write.csv( # save the calculated evaluation metrics. 
-    data.frame(
-      Variable = names(cm$byClass),
-      Value = as.numeric(cm$byClass)
-    ), row.names = FALSE, 
-    file = file.path(path, 'Evaluation', paste0(taxon, '-Metrics.csv'))
-  )
-  
-  write.csv( # threshold information - make it tidy. 
-    data.frame(
-      Metric = colnames(thresh), 
-      Value = as.numeric(t(thresh))
-      ), row.names = FALSE,
-    file = file.path(path, 'Threshold', paste0(taxon, '-Threshold.csv'))
-  )
-  
-  terra::writeRaster( # save all final rasters
-    f_rasts, overwrite = TRUE, 
-    filename = file.path(path, 'Raster', paste0(taxon, '.tif'))
-  )
-}
 
 
 writeSDMresults(
