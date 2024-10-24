@@ -14,7 +14,6 @@ files <- list.files(
   pattern = 'grd',  full.names=TRUE )
 predictors <- terra::rast(files) # import the independent variables
 
-
 # Step 0 define spatial extent of study area. 
 
 pts_plan <-   sf::st_transform(
@@ -168,7 +167,7 @@ predfun <- function(model, data, ...){
 
 rast_cont <- terra::predict(preds, model = mod, fun=predfun, na.rm=TRUE)
 
-rm(lmProfile, predfun, preds, vars)
+rm(lmProfile, predfun, preds)
 
 
 ob <- postProcessSDM(rast_cont, thresh_metric = 'sensitivity', quant_amt = 0.25)
@@ -181,25 +180,141 @@ writeSDMresults(
 
 
 
-identifyClusters <- function(x){
-  f_rasts[['Supplemented']]
+
+
+
+
+
+identifyClusters <- function(f_rasts, predictors){
+  
+  # check if any coefficients are shrunk out of the model, they will be a 0.0000
+  # we will remove these from the analysis. 
+  
+  if(any(unlist(coef(mod))==0)){
+    
+    retained_terms <- which(as.numeric(coef(mod))!=0)
+    retained_terms <- retained_terms[2:length(retained_terms)]
+    vars <- rownames(coef(mod)) # all variables to subset from raster stack
+    vars <- vars[retained_terms] # remove any shrunk variables
+    abs_coef <- abs(c(as.numeric(coef(mod))[retained_terms], 0.1, 0.1)) 
+    
+  } else {
+    
+    vars <- rownames(coef(mod)); vars <- vars[2:length(vars)]
+    abs_coef <- abs(c(as.numeric(coef(mod))), 0.1, 0.1) # 
+    abs_coef <- abs_coef[2:length(abs_coef)] # remove the intercept term
+    
+  }
+  
+  preds <- predictors[[vars]]
+  preds$x <- terra::init(preds, fun = 'x') 
+  preds$y <- terra::init(preds, fun = 'y') 
+  
+  pts <- terra::spatSample(
+    f_rasts[['Supplemented']], 
+    as.points = TRUE,
+    method = 'random', size = 500, na.rm = TRUE)
+  
+  pts <- terra::extract(
+    preds, pts,  bind = TRUE
+  ) |>
+    as.data.frame() |>
+    dplyr::select(-Supplemented)
+  
+  # add XY and set arbitrary ranks
+  
+  stanDev <- terra::global(preds, 'sd', na.rm = TRUE)$sd
+  abs_coef <- abs_coef * stanDev
+  weighted_mat <- sweep(pts, 2, abs_coef, FUN="*")
+  
+  return(list(
+    weighted_mat = weighted_mat, 
+    preds = preds, 
+    abs_coef = abs_coef, 
+    pts = pts))
   
 }
-pts <- terra::spatSample(
-  f_rasts[['Supplemented']], 
-  as.points = TRUE,
-  method = 'random', size = 500, na.rm = TRUE)
 
-pts <- terra::extract(
-  predictors, pts, xy = TRUE,  bind = TRUE
-  ) |>
-  as.data.frame() |>
-  dplyr::select(-Supplemented)
+ic_res <- identifyClusters(f_rasts, predictors = predictors)
 
-abs_coef <- abs(c(as.numeric(coef(mod)), 0.001, 0.001)) # add tiny value for the weights to the long/latitude
-abs_coef <- abs_coef[2:length(abs_coef)] # remove the intercept term
+weighted_mat <- ic_res$weighted_mat
+preds <- ic_res$preds
+abs_coef <- ic_res$abs_coef
+pts <- ic_res$pts
 
-weighted_mat <- sweep(pts, 2, abs_coef, FUN="*")
+w_dist <- dist(weighted_mat, method = 'euclidean')
+clusters <- hclust(w_dist, method = 'ward.D2')
+
+op_k <- maptree::kgs(clusters, w_dist, maxclus = 20)
+as.integer(names(op_k[which(op_k == min(op_k))]))
+clusterCut <- cutree(clusters, 20)
+
+# we can also just have nbclust suggest the optimal number of clusters. 
+NoClusters <- NbClust::NbClust(
+  data = weighted_mat, diss = w_dist, 
+  distance = NULL, min.nc = 5, max.nc = 20, 
+  method = 'kmean', index = 'silhouette'
+)
 
 
-cluster
+# Prepare data for training the KNN classifier #
+weighted_mat$ID <- factor(clusterCut)
+
+weighted_mat <- weighted_mat[complete.cases(weighted_mat),]
+index <- unlist(caret::createDataPartition(weighted_mat$ID, p=0.8)) # @ ARGUMENT TO FN @PARAM
+train <- weighted_mat[index,]
+test <- weighted_mat[-index,]
+
+# first let's down sample each class to a somewhat relatively similar size. 
+
+# next we will use a split which ensures that a few members of each class 
+# are represented in each fold
+
+trainControl <- caret::trainControl(
+  method="repeatedcv", number=10, repeats=5)
+
+fit.knn <- caret::train(ID ~ ., data=train, method="knn",
+                        trControl = trainControl, metric = 'Accuracy')
+knn.k1 <- fit.knn$bestTune # keep this Initial k for testing with knn() function in next section
+
+predicted <- predict(fit.knn, newdata = test[1:9])
+confusionMatrix(predicted, test$ID)
+
+preds <- preds*abs_coef # need to put onto the rescaled... scale. 
+out <- terra::predict(preds, model = fit.knn, na.rm = TRUE)
+
+# outProbs <- terra::predict(preds, model = fit.knn, na.rm = TRUE)
+out <- terra::mask(out, f_rasts$Supplemented)
+terra::plot(out)
+
+terra::writeRaster(out, './results/SDM/clusterTest.tif', overwrite = TRUE)
+
+
+
+
+
+################################################################################
+# IF DATA SET IS HEAVILY UNBALANCED THEN DO THIS .... ##########################
+
+# we surely need to have SOMEWHAT of a balanced data set for the classifier
+
+# let's sample our original raster again, but this time, let's search in the
+# geographic spaces where we obtained these groups members from - then we'll
+# run the clustering process again and hope we get vaguely similar groups with 
+# similar sample sizes. 
+
+
+table(weighted_mat$ID)
+# any point with fewer than the median number of observations will be feed back in
+cc <- table(clusterCut)
+more_samples <- as.numeric(which(cc < median(cc))) # these need more sample
+str(v)
+
+which(table(clusterCut)<med)
+
+# buffer each of these POINTS by an arbitrary distance, e.g. if cell size = 250x250m, 
+# buffer these by 1250 per side to get more cells which can receive another random point
+
+
+
+###############################################################################
