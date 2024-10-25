@@ -182,9 +182,6 @@ writeSDMresults(
 
 
 
-
-
-
 identifyClusters <- function(f_rasts, predictors){
   
   # check if any coefficients are shrunk out of the model, they will be a 0.0000
@@ -201,7 +198,7 @@ identifyClusters <- function(f_rasts, predictors){
   } else {
     
     vars <- rownames(coef(mod)); vars <- vars[2:length(vars)]
-    abs_coef <- abs(c(as.numeric(coef(mod))), 0.1, 0.1) # 
+    abs_coef <- abs(c(as.numeric(coef(mod)), 0.1, 0.1)) # 
     abs_coef <- abs_coef[2:length(abs_coef)] # remove the intercept term
     
   }
@@ -244,10 +241,8 @@ pts <- ic_res$pts
 
 w_dist <- dist(weighted_mat, method = 'euclidean')
 clusters <- hclust(w_dist, method = 'ward.D2')
-
-op_k <- maptree::kgs(clusters, w_dist, maxclus = 20)
-as.integer(names(op_k[which(op_k == min(op_k))]))
 clusterCut <- cutree(clusters, 20)
+
 
 # we can also just have nbclust suggest the optimal number of clusters. 
 NoClusters <- NbClust::NbClust(
@@ -261,11 +256,9 @@ NoClusters <- NbClust::NbClust(
 weighted_mat$ID <- factor(clusterCut)
 
 weighted_mat <- weighted_mat[complete.cases(weighted_mat),]
-index <- unlist(caret::createDataPartition(weighted_mat$ID, p=0.8)) # @ ARGUMENT TO FN @PARAM
+index <- unlist(caret::createDataPartition(weighted_mat$ID, p=0.85)) # @ ARGUMENT TO FN @PARAM
 train <- weighted_mat[index,]
 test <- weighted_mat[-index,]
-
-# first let's down sample each class to a somewhat relatively similar size. 
 
 # next we will use a split which ensures that a few members of each class 
 # are represented in each fold
@@ -277,7 +270,7 @@ fit.knn <- caret::train(ID ~ ., data=train, method="knn",
                         trControl = trainControl, metric = 'Accuracy')
 knn.k1 <- fit.knn$bestTune # keep this Initial k for testing with knn() function in next section
 
-predicted <- predict(fit.knn, newdata = test[1:9])
+predicted <- predict(fit.knn, newdata = test)
 confusionMatrix(predicted, test$ID)
 
 preds <- preds*abs_coef # need to put onto the rescaled... scale. 
@@ -294,7 +287,7 @@ terra::writeRaster(out, './results/SDM/clusterTest.tif', overwrite = TRUE)
 
 
 ################################################################################
-# IF DATA SET IS HEAVILY UNBALANCED THEN DO THIS .... ##########################
+############ IF DATA SET IS HEAVILY UNBALANCED THEN DO THIS  ###################
 
 # we surely need to have SOMEWHAT of a balanced data set for the classifier
 
@@ -303,18 +296,36 @@ terra::writeRaster(out, './results/SDM/clusterTest.tif', overwrite = TRUE)
 # run the clustering process again and hope we get vaguely similar groups with 
 # similar sample sizes. 
 
-
-table(weighted_mat$ID)
 # any point with fewer than the median number of observations will be feed back in
 cc <- table(clusterCut)
 more_samples <- as.numeric(which(cc < median(cc))) # these need more sample
-str(v)
 
-which(table(clusterCut)<med)
+
+r_projected <- f_rasts[['Supplemented']][[1]] |>
+  terra::project(
+    '+proj=laea +lon_0=-421.171875 +lat_0=-16.8672134 +datum=WGS84 +units=m +no_defs')
+
+d <- terra::xres(r_projected)
+
+# need to use the untransformed points to get the proper sizes. 
+need_more_samples <- pts[ weighted_mat$ID %in% more_samples, c('x', 'y')] |>
+  sf::st_as_sf(coords = c(x='x', y='y'), crs = terra::crs(f_rasts[['Supplemented']])) |>
+  sf::st_buffer(d)
+
+
+pts <- terra::spatSample(
+  f_rasts[['Supplemented']], 
+  as.points = TRUE,
+  method = 'random', size = 500, na.rm = TRUE)
+
+pts <- terra::extract(
+  preds, pts,  bind = TRUE
+) |>
+  as.data.frame() |>
+  dplyr::select(-Supplemented)
+
 
 # buffer each of these POINTS by an arbitrary distance, e.g. if cell size = 250x250m, 
 # buffer these by 1250 per side to get more cells which can receive another random point
-
-
 
 ###############################################################################
