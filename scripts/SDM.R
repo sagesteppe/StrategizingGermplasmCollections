@@ -222,6 +222,8 @@ identifyClusters <- function(f_rasts, predictors){
   weighted_mat <- sweep(pts, 2, abs_coef, FUN="*")
   
   return(list(
+    stanDev = stanDev,
+    
     weighted_mat = weighted_mat, 
     preds = preds, 
     abs_coef = abs_coef, 
@@ -272,6 +274,7 @@ knn.k1 <- fit.knn$bestTune # keep this Initial k for testing with knn() function
 predicted <- predict(fit.knn, newdata = test)
 confusionMatrix(predicted, test$ID)
 
+
 preds <- preds*abs_coef # need to put onto the rescaled... scale. 
 out <- terra::predict(preds, model = fit.knn, na.rm = TRUE)
 
@@ -280,6 +283,29 @@ out <- terra::mask(out, f_rasts$Supplemented)
 terra::plot(out)
 
 terra::writeRaster(out, './results/SDM/clusterTest.tif', overwrite = TRUE)
+
+
+########## THIS NEXT LINE LOOKS WRONG!!!!!!!!!!! WE SHOULD BE RESCALING THEM
+# USING 
+
+glmnetRescaleRaster <- function(x){ # to match glmnets scaling exactly. 
+  
+  sdN <- function(x){
+    sigma <- sqrt( (1/length(x)) * sum((x-mean(x))^2))
+  }
+  
+  scaled <- (x-mean(x)) / sdN(x) 
+}
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -330,3 +356,6 @@ concentrated_pts <- concentrated_pts[complete.cases(concentrated_pts),]
 concentrated_pts <- unique(concentrated_pts)
 
 weighted_mat2 <- sweep(concentrated_pts, 2, abs_coef, FUN="*")
+
+
+
