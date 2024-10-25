@@ -92,10 +92,11 @@ createPCNM_fitModel <- function(x, planar_proj){
     rm(fit, p)
   }  
   
-  rm(xypcnm.sf, pcnm2raster, xypcnm.df, pcnmProfile)
+  rm(pcnm2raster, pcnmProfile)
   
   return(list(
     mod = mod,
+    pred_mat = preds,
     cv_model = cv_model, 
     pcnm = pcnm))
 }

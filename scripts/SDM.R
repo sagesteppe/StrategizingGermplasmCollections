@@ -118,7 +118,7 @@ sub <- train_dat[,predictors(lmProfile)]
 
 rm(train1, train_dat)
 
-# now fit the model just using glmnet::glment in order that we can get the 
+# now fit the model just using glmnet::glmnet in order that we can get the 
 # type of response for type='prob' rather than log odds or labelled classes
 # which we need to work with terra::predict. 
 mod <- glmnet::glmnet(
@@ -136,10 +136,10 @@ obs <- createPCNM_fitModel(
     planar_proj = '+proj=laea +lon_0=-421.171875 +lat_0=-16.8672134 +datum=WGS84 +units=m +no_defs')
 
 mod <- obs$mod; cv_model <- obs$cv_model; pcnm <- obs$pcnm
+pred_mat <- obs$pred_mat
 
 predictors <- c(predictors, pcnm)
 
-rm(train)
 # get the variables to extract from the rasters for creating a matrix for 
 # predictions, glmnet predict is kind of wonky and needs exact matrix dimensions. 
 
@@ -157,7 +157,7 @@ cm <- caret::confusionMatrix(
   reference = test$occurrence,
   positive="1")
 
-rm(predict_mat)
+# rm(predict_mat)
 ## Predict our model onto a gridded surface (raster) ## This will allow for downstream
 # use with the rest of the safeHavens workflow. 
 preds <- predictors[[vars]]
@@ -167,16 +167,52 @@ predfun <- function(model, data, ...){
 
 rast_cont <- terra::predict(preds, model = mod, fun=predfun, na.rm=TRUE)
 
-rm(lmProfile, predfun, preds)
+rm(lmProfile, predfun)
 
 ob <- postProcessSDM(rast_cont, thresh_metric = 'sensitivity', quant_amt = 0.25)
 f_rasts <- ob$f_rasts
 thresh <- ob$thresh
 
+########### HERE WE CREATE A COPY OF THE RASTER PREDICTORS WHERE WE HAVE 
+# STANDARDIZED EACH VARIABLE - SO IT IS EQUIVALENT TO THE INPUT TO THE GLMNET
+# FUNCTION, AND THEN MULTIPLIED IT BY IT'S BETA COEFFICIENT FROM THE FIT MODEL
+# WE CAN USE THESE VALUES FOR CLUSTERING GOING FORWARDS. THEY REFLECT THE RELATIVE
+# IMPORTANCE OF EACH VARIABLE IN STRUCTURE OUR MODELS. 
+
+sdN <- function(x){sigma=sqrt((1/length(x)) * sum((x-mean(x))^2))}
+
+coef_tab <- data.frame(
+    Variable = row.names(as.data.frame(as.matrix(coef(mod)))), 
+    Coefficient = as.numeric(coef(mod))
+  )
+coef_tab <- coef_tab[2:nrow(coef_tab),]
+
+# now calculate the beta coefficient 
+yvar <- sdN(as.numeric(train$occurrence)-1)
+coef_tab$BetaCoefficient <- apply(pred_mat, 2, FUN = sdN)
+coef_tab$BetaCoefficient <- coef_tab$Coefficient / yvar * coef_tab$BetaCoefficient
+
+# this rescales the raster to be equivalent to the inputs to the elastic net model. 
+# after this they still need to be multiplied by the beta coefficients 
+pred_rescale <- preds
+for (i in seq_along(1:dim(pred_rescale)[3])){
+  
+  lyr_name <- names(pred_rescale)[[i]]
+  vals <- pred_mat[,lyr_name]
+  pred_rescale[[i]] <- terra::app(pred_rescale[[i]], 
+                           fun = function(x){(x - mean(vals)) / sdN(vals)})
+  
+  pred_rescale[[i]] <- pred_rescale[[i]] * abs(coef_tab[coef_tab$Variable==lyr_name,'BetaCoefficient'])
+    
+  names(pred_rescale[[i]]) <- lyr_name
+  
+}
+
+terra::plot(pred_rescale)
 terra::plot(f_rasts)
+
 writeSDMresults(
   file.path( 'results', 'SDM'), 'Bradypus_test')
-
 
 
 identifyClusters <- function(f_rasts, predictors){
@@ -278,33 +314,17 @@ confusionMatrix(predicted, test$ID)
 preds <- preds*abs_coef # need to put onto the rescaled... scale. 
 out <- terra::predict(preds, model = fit.knn, na.rm = TRUE)
 
+
+
+
+
+
+
 # outProbs <- terra::predict(preds, model = fit.knn, na.rm = TRUE)
 out <- terra::mask(out, f_rasts$Supplemented)
 terra::plot(out)
 
 terra::writeRaster(out, './results/SDM/clusterTest.tif', overwrite = TRUE)
-
-
-########## THIS NEXT LINE LOOKS WRONG!!!!!!!!!!! WE SHOULD BE RESCALING THEM
-# USING 
-
-glmnetRescaleRaster <- function(x){ # to match glmnets scaling exactly. 
-  
-  sdN <- function(x){
-    sigma <- sqrt( (1/length(x)) * sum((x-mean(x))^2))
-  }
-  
-  scaled <- (x-mean(x)) / sdN(x) 
-}
-
-
-
-
-
-
-
-
-
 
 
 

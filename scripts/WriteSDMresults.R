@@ -36,10 +36,7 @@ writeSDMresults <- function(path, taxon){
     )
   
   write.csv( # save the model coefficients
-    data.frame(
-      Variable = row.names(as.data.frame(as.matrix(coef(mod)))), 
-      Coefficient = as.numeric(coef(mod))
-    ),  row.names = FALSE,
+    coef_tab,  row.names = FALSE,
     file = file.path(path, 'Model', paste0(taxon, '-Coefficients.csv'))
   )
   
