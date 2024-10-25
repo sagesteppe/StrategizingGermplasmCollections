@@ -1,12 +1,12 @@
 "Variable","Value"
-"Sensitivity",0.954545454545455
-"Specificity",0.826086956521739
-"Pos Pred Value",0.84
-"Neg Pred Value",0.95
-"Precision",0.84
-"Recall",0.954545454545455
-"F1",0.893617021276596
+"Sensitivity",0.909090909090909
+"Specificity",0.739130434782609
+"Pos Pred Value",0.769230769230769
+"Neg Pred Value",0.894736842105263
+"Precision",0.769230769230769
+"Recall",0.909090909090909
+"F1",0.833333333333333
 "Prevalence",0.488888888888889
-"Detection Rate",0.466666666666667
-"Detection Prevalence",0.555555555555556
-"Balanced Accuracy",0.890316205533597
+"Detection Rate",0.444444444444444
+"Detection Prevalence",0.577777777777778
+"Balanced Accuracy",0.824110671936759

@@ -169,7 +169,6 @@ rast_cont <- terra::predict(preds, model = mod, fun=predfun, na.rm=TRUE)
 
 rm(lmProfile, predfun, preds)
 
-
 ob <- postProcessSDM(rast_cont, thresh_metric = 'sensitivity', quant_amt = 0.25)
 f_rasts <- ob$f_rasts
 thresh <- ob$thresh
@@ -177,8 +176,6 @@ thresh <- ob$thresh
 terra::plot(f_rasts)
 writeSDMresults(
   file.path( 'results', 'SDM'), 'Bradypus_test')
-
-
 
 
 
@@ -214,7 +211,7 @@ identifyClusters <- function(f_rasts, predictors){
   
   pts <- terra::extract(
     preds, pts,  bind = TRUE
-  ) |>
+  ) |> 
     as.data.frame() |>
     dplyr::select(-Supplemented)
   
@@ -231,6 +228,8 @@ identifyClusters <- function(f_rasts, predictors){
     pts = pts))
   
 }
+
+predictors <- terra::disagg(predictors, fact = 2)
 
 ic_res <- identifyClusters(f_rasts, predictors = predictors)
 
@@ -284,8 +283,6 @@ terra::writeRaster(out, './results/SDM/clusterTest.tif', overwrite = TRUE)
 
 
 
-
-
 ################################################################################
 ############ IF DATA SET IS HEAVILY UNBALANCED THEN DO THIS  ###################
 
@@ -301,6 +298,7 @@ cc <- table(clusterCut)
 more_samples <- as.numeric(which(cc < median(cc))) # these need more sample
 
 
+# determine how large each cell is in m, we can use this as a basis for the buffering process. 
 r_projected <- f_rasts[['Supplemented']][[1]] |>
   terra::project(
     '+proj=laea +lon_0=-421.171875 +lat_0=-16.8672134 +datum=WGS84 +units=m +no_defs')
@@ -309,23 +307,26 @@ d <- terra::xres(r_projected)
 
 # need to use the untransformed points to get the proper sizes. 
 need_more_samples <- pts[ weighted_mat$ID %in% more_samples, c('x', 'y')] |>
-  sf::st_as_sf(coords = c(x='x', y='y'), crs = terra::crs(f_rasts[['Supplemented']])) |>
-  sf::st_buffer(d)
+  sf::st_as_sf(coords = c(x='x', y='y'), crs = terra::crs(f_rasts[['Supplemented']]))  |>
+  sf::st_transform(  crs = terra::crs(r_projected)) |>
+  sf::st_buffer(d*3.05) |>  # @PARAM IN FUNCTION - HOW MUCH INCREASE AROUND FOCAL CELL!?
+  dplyr::summarize(geometry = sf::st_union(geometry)) |>
+  sf::st_make_valid() 
 
+concentrated_pts <- sf::st_sample(need_more_samples, size = 100, type = 'regular') |>
+  sf::st_as_sf() |>
+  sf::st_transform( terra::crs(f_rasts[['Supplemented']]) )
 
-pts <- terra::spatSample(
-  f_rasts[['Supplemented']], 
-  as.points = TRUE,
-  method = 'random', size = 500, na.rm = TRUE)
+ggplot() +
+  geom_sf(data = need_more_samples) +
+  geom_sf(data = concentrated_pts)
 
-pts <- terra::extract(
-  preds, pts,  bind = TRUE
+concentrated_pts <- terra::extract(
+  preds, concentrated_pts,  bind = TRUE, 
 ) |>
-  as.data.frame() |>
-  dplyr::select(-Supplemented)
+  as.data.frame()
 
+concentrated_pts <- concentrated_pts[complete.cases(concentrated_pts),]
+concentrated_pts <- unique(concentrated_pts)
 
-# buffer each of these POINTS by an arbitrary distance, e.g. if cell size = 250x250m, 
-# buffer these by 1250 per side to get more cells which can receive another random point
-
-###############################################################################
+weighted_mat2 <- sweep(concentrated_pts, 2, abs_coef, FUN="*")
