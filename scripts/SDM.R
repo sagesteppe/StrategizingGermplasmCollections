@@ -3,6 +3,7 @@ setwd('~/Documents/assoRted/StrategizingGermplasmCollections')
 source('./scripts/createPCNM_fitModel.R')
 source('./scripts/WriteSDMresults.R')
 source('./scripts/postProcessSDM.R')
+source('./scripts/trainKNN.R')
 ################################################################################
 
 x <- read.csv(file.path(system.file(package="dismo"), 'ex', 'bradypus.csv'))
@@ -268,34 +269,14 @@ NoClusters <- NbClust::NbClust(
   method = 'kmean', index = 'silhouette'
 )
 
+table(clusterCut)
 
-# Prepare data for training the KNN classifier #
+# Prepare data for training the initial KNN classifier #
 weighted_mat$ID <- factor(clusterCut)
-
 weighted_mat <- weighted_mat[complete.cases(weighted_mat),]
-index <- unlist(caret::createDataPartition(weighted_mat$ID, p=0.85)) # @ ARGUMENT TO FN @PARAM
-train <- weighted_mat[index,]
-test <- weighted_mat[-index,]
 
-# next we will use a split which ensures that a few members of each class 
-# are represented in each fold
-
-trainControl <- caret::trainControl(
-  method="repeatedcv", number=10, repeats=5)
-
-fit.knn <- caret::train(ID ~ ., data=train, method="knn",
-                        trControl = trainControl, metric = 'Accuracy')
-knn.k1 <- fit.knn$bestTune # keep this Initial k for testing with knn() function in next section
-
-predicted <- predict(fit.knn, newdata = test)
-confusionMatrix(predicted, test$ID)
-
-out <- terra::predict(pred_rescale, model = fit.knn, na.rm = TRUE)
-terra::plot(out)
-terra::points(pts)
-terra::writeRaster(out, './results/SDM/clusterTest.tif', overwrite = TRUE)
-
-
+firstKNN <- trainKNN(weighted_mat, split_prop = 0.8)
+fit.knn <- firstKNN$fit.knn
 
 
 ################################################################################
@@ -311,7 +292,6 @@ terra::writeRaster(out, './results/SDM/clusterTest.tif', overwrite = TRUE)
 # any point with fewer than the median number of observations will be feed back in
 cc <- table(clusterCut)
 more_samples <- as.numeric(which(cc < median(cc))) # these need more sample
-
 
 # determine how large each cell is in m, we can use this as a basis for the buffering process. 
 r_projected <- f_rasts[['Supplemented']][[1]] |>
@@ -332,19 +312,39 @@ concentrated_pts <- sf::st_sample(need_more_samples, size = 100, type = 'regular
   sf::st_as_sf() |>
   sf::st_transform( terra::crs(f_rasts[['Supplemented']]) )
 
-ggplot() +
-  geom_sf(data = need_more_samples) +
-  geom_sf(data = concentrated_pts)
-
 concentrated_pts <- terra::extract(
-  preds, concentrated_pts,  bind = TRUE, 
+  pred_rescale, concentrated_pts,  bind = TRUE, 
 ) |>
   as.data.frame()
 
 concentrated_pts <- concentrated_pts[complete.cases(concentrated_pts),]
 concentrated_pts <- unique(concentrated_pts)
+concentrated_pts$ID <- 1:nrow(concentrated_pts)
 
-weighted_mat2 <- sweep(concentrated_pts, 2, abs_coef, FUN="*")
+# now we see if any points from the first data set are repeated in the second
+duplicated <- dplyr::inner_join(
+  concentrated_pts[,c('ID', 'x', 'y')], weighted_mat[,c('x', 'y')])
+concentrated_pts <- concentrated_pts[ 
+  ! concentrated_pts$ID %in% duplicated$ID, 
+  1:ncol(concentrated_pts)-1]
 
+######## NOW WE APPLY A K NEAREST NEIGHBORS ALGORITHM TO THESE POINTS AND SEE
+# WHICH GROUPS THEY BELONG ##
 
+concentrated_pts$ID <- as.numeric(predict(fit.knn, newdata = concentrated_pts))
+concentrated_pts <- concentrated_pts [ concentrated_pts$ID %in% more_samples, ] 
 
+## prepare data to train a second KNN with all added data. 
+weighted_mat <- rbind(concentrated_pts, weighted_mat)
+weighted_mat$ID <- factor(weighted_mat$ID)
+
+rm(concentrated_pts, d, need_more_samples, r_projected)
+
+finalKNN <- trainKNN(weighted_mat, split_prop = 0.85)
+fit.knn <- finalKNN$fit.knn
+confusionMatrix <- finalKNN$confusionMatrix
+
+out <- terra::predict(pred_rescale, model = fit.knn, na.rm = TRUE)
+terra::plot(out)
+
+terra::writeRaster(out, './results/SDM/clusterTest.tif', overwrite = TRUE)
