@@ -215,71 +215,51 @@ writeSDMresults(
   file.path( 'results', 'SDM'), 'Bradypus_test')
 
 
-identifyClusters <- function(f_rasts, predictors){
-  
-  # check if any coefficients are shrunk out of the model, they will be a 0.0000
-  # we will remove these from the analysis. 
-  
-  if(any(unlist(coef(mod))==0)){
-    
-    retained_terms <- which(as.numeric(coef(mod))!=0)
-    retained_terms <- retained_terms[2:length(retained_terms)]
-    vars <- rownames(coef(mod)) # all variables to subset from raster stack
-    vars <- vars[retained_terms] # remove any shrunk variables
-    abs_coef <- abs(c(as.numeric(coef(mod))[retained_terms], 0.1, 0.1)) 
-    
-  } else {
-    
-    vars <- rownames(coef(mod)); vars <- vars[2:length(vars)]
-    abs_coef <- abs(c(as.numeric(coef(mod)), 0.1, 0.1)) # 
-    abs_coef <- abs_coef[2:length(abs_coef)] # remove the intercept term
-    
-  }
-  
-  preds <- predictors[[vars]]
-  preds$x <- terra::init(preds, fun = 'x') 
-  preds$y <- terra::init(preds, fun = 'y') 
-  
-  pts <- terra::spatSample(
-    f_rasts[['Supplemented']], 
-    as.points = TRUE,
-    method = 'random', size = 500, na.rm = TRUE)
-  
-  pts <- terra::extract(
-    preds, pts,  bind = TRUE
-  ) |> 
-    as.data.frame() |>
-    dplyr::select(-Supplemented)
-  
-  # add XY and set arbitrary ranks
-  
-  stanDev <- terra::global(preds, 'sd', na.rm = TRUE)$sd
-  abs_coef <- abs_coef * stanDev
-  weighted_mat <- sweep(pts, 2, abs_coef, FUN="*")
-  
-  return(list(
-    stanDev = stanDev,
-    
-    weighted_mat = weighted_mat, 
-    preds = preds, 
-    abs_coef = abs_coef, 
-    pts = pts))
-  
-}
+####### add coordinates to make them an explicit feature in the clustering #####
+ranges <- terra::global(pred_rescale, fun = 'range', na.rm = TRUE)
+targetRangeCoords <- max(abs(ranges$min - ranges$max)) * 2.5
 
-predictors <- terra::disagg(predictors, fact = 2)
+pred_rescale$x <- terra::init(pred_rescale, fun = 'x') 
+pred_rescale$y <- terra::init(pred_rescale, fun = 'y')
 
-ic_res <- identifyClusters(f_rasts, predictors = predictors)
+pred_rescale$x <- scale(pred_rescale$x)
+pred_rescale$y <- scale(pred_rescale$y)
 
-weighted_mat <- ic_res$weighted_mat
-preds <- ic_res$preds
-abs_coef <- ic_res$abs_coef
-pts <- ic_res$pts
+coordRanges <- rbind(
+  terra::global(pred_rescale$y, fun = 'range'),
+  terra::global(pred_rescale$x, fun = 'range')
+)
 
+coordRanges$range = (coordRanges$min - coordRanges$max) 
+coordRanges$multiplier = targetRangeCoords/ coordRanges$range 
+
+pred_rescale$x <- pred_rescale$x * coordRanges[rownames(coordRanges)=='x','multiplier']
+pred_rescale$y <- pred_rescale$y * coordRanges[rownames(coordRanges)=='y','multiplier']
+pred_rescale <- terra::mask(pred_rescale, pred_rescale[[1]]) # mask to areas of interest
+
+rm(targetRangeCoords, coordRanges)
+######## now drop any predictors which were shrunk out of the model ###############
+# note we need the TRUE on the end for the coord layers we just added. 
+pred_rescale <- pred_rescale [[ c(ranges$min != ranges$max, rep(TRUE, times = 2)) ]]
+
+## extract preds to points for creating matrices. ##
+pts <- terra::spatSample(
+  f_rasts[['Supplemented']], 
+  as.points = TRUE,
+  method = 'random', size = 500, na.rm = TRUE)
+  
+weighted_mat <- terra::extract(
+  pred_rescale, pts, bind = TRUE) |> 
+  as.data.frame() |>
+  dplyr::select(-Supplemented) 
+  
+##### this next disaggregation line is just for xperimental data. ######
+pred_rescale <- terra::disagg(pred_rescale, fact = 2)
+
+# cluster here 
 w_dist <- dist(weighted_mat, method = 'euclidean')
 clusters <- hclust(w_dist, method = 'ward.D2')
 clusterCut <- cutree(clusters, 20)
-
 
 # we can also just have nbclust suggest the optimal number of clusters. 
 NoClusters <- NbClust::NbClust(
@@ -310,20 +290,9 @@ knn.k1 <- fit.knn$bestTune # keep this Initial k for testing with knn() function
 predicted <- predict(fit.knn, newdata = test)
 confusionMatrix(predicted, test$ID)
 
-
-preds <- preds*abs_coef # need to put onto the rescaled... scale. 
-out <- terra::predict(preds, model = fit.knn, na.rm = TRUE)
-
-
-
-
-
-
-
-# outProbs <- terra::predict(preds, model = fit.knn, na.rm = TRUE)
-out <- terra::mask(out, f_rasts$Supplemented)
+out <- terra::predict(pred_rescale, model = fit.knn, na.rm = TRUE)
 terra::plot(out)
-
+terra::points(pts)
 terra::writeRaster(out, './results/SDM/clusterTest.tif', overwrite = TRUE)
 
 
