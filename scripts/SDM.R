@@ -4,6 +4,7 @@ source('./scripts/createPCNM_fitModel.R')
 source('./scripts/WriteSDMresults.R')
 source('./scripts/postProcessSDM.R')
 source('./scripts/trainKNN.R')
+source('./scripts/EnvironmentalBasedSample.R')
 ################################################################################
 
 x <- read.csv(file.path(system.file(package="dismo"), 'ex', 'bradypus.csv'))
@@ -174,11 +175,16 @@ ob <- postProcessSDM(rast_cont, thresh_metric = 'sensitivity', quant_amt = 0.25)
 f_rasts <- ob$f_rasts
 thresh <- ob$thresh
 
+
+
+
 ########### HERE WE CREATE A COPY OF THE RASTER PREDICTORS WHERE WE HAVE 
 # STANDARDIZED EACH VARIABLE - SO IT IS EQUIVALENT TO THE INPUT TO THE GLMNET
 # FUNCTION, AND THEN MULTIPLIED IT BY IT'S BETA COEFFICIENT FROM THE FIT MODEL
 # WE CAN USE THESE VALUES FOR CLUSTERING GOING FORWARDS. THEY REFLECT THE RELATIVE
 # IMPORTANCE OF EACH VARIABLE IN STRUCTURE OUR MODELS. 
+
+RescaleRasters <- function(x){}
 
 sdN <- function(x){sigma=sqrt((1/length(x)) * sum((x-mean(x))^2))}
 
@@ -204,7 +210,6 @@ for (i in seq_along(1:dim(pred_rescale)[3])){
                            fun = function(x){(x - mean(vals)) / sdN(vals)})
   
   pred_rescale[[i]] <- pred_rescale[[i]] * abs(coef_tab[coef_tab$Variable==lyr_name,'BetaCoefficient'])
-    
   names(pred_rescale[[i]]) <- lyr_name
   
 }
@@ -215,136 +220,12 @@ terra::plot(f_rasts)
 writeSDMresults(
   file.path( 'results', 'SDM'), 'Bradypus_test')
 
+EnvironmentalBasedSample(
+  pred_rescale = pred_rescale, 
+  path = file.path( 'results', 'SDM'),
+  taxon = 'Bradypus_test', 
+  f_rasts = f_rasts, n = 20, fixedClusters = TRUE, n_pts = 500, 
+  planar_proj = 
+    '+proj=laea +lon_0=-421.171875 +lat_0=-16.8672134 +datum=WGS84 +units=m +no_defs',
+  buffer_d = 3, prop_split = 0.8)
 
-####### add coordinates to make them an explicit feature in the clustering #####
-ranges <- terra::global(pred_rescale, fun = 'range', na.rm = TRUE)
-targetRangeCoords <- max(abs(ranges$min - ranges$max)) * 2.5
-
-pred_rescale$x <- terra::init(pred_rescale, fun = 'x') 
-pred_rescale$y <- terra::init(pred_rescale, fun = 'y')
-
-pred_rescale$x <- scale(pred_rescale$x)
-pred_rescale$y <- scale(pred_rescale$y)
-
-coordRanges <- rbind(
-  terra::global(pred_rescale$y, fun = 'range'),
-  terra::global(pred_rescale$x, fun = 'range')
-)
-
-coordRanges$range = (coordRanges$min - coordRanges$max) 
-coordRanges$multiplier = targetRangeCoords/ coordRanges$range 
-
-pred_rescale$x <- pred_rescale$x * coordRanges[rownames(coordRanges)=='x','multiplier']
-pred_rescale$y <- pred_rescale$y * coordRanges[rownames(coordRanges)=='y','multiplier']
-pred_rescale <- terra::mask(pred_rescale, pred_rescale[[1]]) # mask to areas of interest
-
-rm(targetRangeCoords, coordRanges)
-######## now drop any predictors which were shrunk out of the model ###############
-# note we need the TRUE on the end for the coord layers we just added. 
-pred_rescale <- pred_rescale [[ c(ranges$min != ranges$max, rep(TRUE, times = 2)) ]]
-
-## extract preds to points for creating matrices. ##
-pts <- terra::spatSample(
-  f_rasts[['Supplemented']], 
-  as.points = TRUE,
-  method = 'random', size = 500, na.rm = TRUE)
-  
-weighted_mat <- terra::extract(
-  pred_rescale, pts, bind = TRUE) |> 
-  as.data.frame() |>
-  dplyr::select(-Supplemented) 
-  
-##### this next disaggregation line is just for xperimental data. ######
-pred_rescale <- terra::disagg(pred_rescale, fact = 2)
-
-# cluster here 
-w_dist <- dist(weighted_mat, method = 'euclidean')
-clusters <- hclust(w_dist, method = 'ward.D2')
-clusterCut <- cutree(clusters, 20)
-
-# we can also just have nbclust suggest the optimal number of clusters. 
-NoClusters <- NbClust::NbClust(
-  data = weighted_mat, diss = w_dist, 
-  distance = NULL, min.nc = 5, max.nc = 20, 
-  method = 'kmean', index = 'silhouette'
-)
-
-table(clusterCut)
-
-# Prepare data for training the initial KNN classifier #
-weighted_mat$ID <- factor(clusterCut)
-weighted_mat <- weighted_mat[complete.cases(weighted_mat),]
-
-firstKNN <- trainKNN(weighted_mat, split_prop = 0.8)
-fit.knn <- firstKNN$fit.knn
-
-
-################################################################################
-############ IF DATA SET IS HEAVILY UNBALANCED THEN DO THIS  ###################
-
-# we surely need to have SOMEWHAT of a balanced data set for the classifier
-
-# let's sample our original raster again, but this time, let's search in the
-# geographic spaces where we obtained these groups members from - then we'll
-# run the clustering process again and hope we get vaguely similar groups with 
-# similar sample sizes. 
-
-# any point with fewer than the median number of observations will be feed back in
-cc <- table(clusterCut)
-more_samples <- as.numeric(which(cc < median(cc))) # these need more sample
-
-# determine how large each cell is in m, we can use this as a basis for the buffering process. 
-r_projected <- f_rasts[['Supplemented']][[1]] |>
-  terra::project(
-    '+proj=laea +lon_0=-421.171875 +lat_0=-16.8672134 +datum=WGS84 +units=m +no_defs')
-
-d <- terra::xres(r_projected)
-
-# need to use the untransformed points to get the proper sizes. 
-need_more_samples <- pts[ weighted_mat$ID %in% more_samples, c('x', 'y')] |>
-  sf::st_as_sf(coords = c(x='x', y='y'), crs = terra::crs(f_rasts[['Supplemented']]))  |>
-  sf::st_transform(  crs = terra::crs(r_projected)) |>
-  sf::st_buffer(d*3.05) |>  # @PARAM IN FUNCTION - HOW MUCH INCREASE AROUND FOCAL CELL!?
-  dplyr::summarize(geometry = sf::st_union(geometry)) |>
-  sf::st_make_valid() 
-
-concentrated_pts <- sf::st_sample(need_more_samples, size = 100, type = 'regular') |>
-  sf::st_as_sf() |>
-  sf::st_transform( terra::crs(f_rasts[['Supplemented']]) )
-
-concentrated_pts <- terra::extract(
-  pred_rescale, concentrated_pts,  bind = TRUE, 
-) |>
-  as.data.frame()
-
-concentrated_pts <- concentrated_pts[complete.cases(concentrated_pts),]
-concentrated_pts <- unique(concentrated_pts)
-concentrated_pts$ID <- 1:nrow(concentrated_pts)
-
-# now we see if any points from the first data set are repeated in the second
-duplicated <- dplyr::inner_join(
-  concentrated_pts[,c('ID', 'x', 'y')], weighted_mat[,c('x', 'y')])
-concentrated_pts <- concentrated_pts[ 
-  ! concentrated_pts$ID %in% duplicated$ID, 
-  1:ncol(concentrated_pts)-1]
-
-######## NOW WE APPLY A K NEAREST NEIGHBORS ALGORITHM TO THESE POINTS AND SEE
-# WHICH GROUPS THEY BELONG ##
-
-concentrated_pts$ID <- as.numeric(predict(fit.knn, newdata = concentrated_pts))
-concentrated_pts <- concentrated_pts [ concentrated_pts$ID %in% more_samples, ] 
-
-## prepare data to train a second KNN with all added data. 
-weighted_mat <- rbind(concentrated_pts, weighted_mat)
-weighted_mat$ID <- factor(weighted_mat$ID)
-
-rm(concentrated_pts, d, need_more_samples, r_projected)
-
-finalKNN <- trainKNN(weighted_mat, split_prop = 0.85)
-fit.knn <- finalKNN$fit.knn
-confusionMatrix <- finalKNN$confusionMatrix
-
-out <- terra::predict(pred_rescale, model = fit.knn, na.rm = TRUE)
-terra::plot(out)
-
-terra::writeRaster(out, './results/SDM/clusterTest.tif', overwrite = TRUE)

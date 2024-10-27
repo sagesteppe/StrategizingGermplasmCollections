@@ -3,7 +3,7 @@
 #' This function creates 20 grid cells over a geographic area (`x`), typically a species
 #' range.  
 #' @param x An SF object or terra spatraster. the range over which to generate the clusters.
-#' @param projection Numeric. An EPSG code for a planar coordinate projection, in meters, for use with the function. For species with very narrow ranges a UTM zone may be best (e.g. 32611 for WGS84 zone 11 north, or 29611 for NAD83 zone 11 north). Otherwise a continental scale projection like 5070 See LINK for more information on CRS.
+#' @param planar_projection Numeric, or character vector. An EPSG code, or a proj4 string, for a planar coordinate projection, in meters, for use with the function. For species with very narrow ranges a UTM zone may be best (e.g. 32611 for WGS84 zone 11 north, or 29611 for NAD83 zone 11 north). Otherwise a continental scale projection like 5070 See https://projectionwizard.org/ for more information on CRS. The value is simply passed to sf::st_transform if you need to experiment. 
 #' @examples
 #' target <- spData::us_states |> 
 #' dplyr::filter(NAME == 'Rhode Island') |>
@@ -12,9 +12,9 @@
 #' plot(output)
 #' 
 #' @export
-GridBasedSample <- function(x, projection){
+GridBasedSample <- function(x, planar_projection){
   
-  if(missing(projection)){projection = 5070}
+  if(missing(planar_projection)){planar_projection = 5070}
   # Determine the size of each grid. 
   gr <- sf::st_make_grid(x, n = c(8, 6), square = FALSE) # toy data. 
   gr <- sf::st_intersection(gr, x) 

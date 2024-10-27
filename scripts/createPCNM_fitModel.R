@@ -11,11 +11,8 @@
 #' the glmnet model (including if shrunk out), 2) the glmnet model 3) all fitting
 #' information from carets process. 
 #' @param x should be the training data as an sf/tibble/dataframe
-#' @param planar_proj a planar projection which is used for calculatin distances for the PCNM/MEM, 
-#' see https://projectionwizard.org/  and the 'Equal Area' radio toggle for global analysis. 
-#' For conterminous USA, we can recommend 5070 if a more local utm will not suffice. 
-#' Can be supplied either as a raw numeric EPSG code (e.g. 5070), or a proj4 character
-#' string. The value is simply passed to sf::st_transform if you need to experiment. 
+#' @param planar_proj Numeric, or character vector. An EPSG code, or a proj4 string, for a planar coordinate projection, in meters, for use with the function. For species with very narrow ranges a UTM zone may be best (e.g. 32611 for WGS84 zone 11 north, or 29611 for NAD83 zone 11 north). Otherwise a continental scale projection like 5070 See https://projectionwizard.org/ for more information on CRS. The value is simply passed to sf::st_transform if you need to experiment. 
+#' 
 createPCNM_fitModel <- function(x, planar_proj){
   
   train_planar <- sf::st_transform(x, planar_proj) 
