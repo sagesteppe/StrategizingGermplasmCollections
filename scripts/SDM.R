@@ -5,7 +5,7 @@ source('./scripts/WriteSDMresults.R')
 source('./scripts/postProcessSDM.R')
 source('./scripts/trainKNN.R')
 source('./scripts/EnvironmentalBasedSample.R')
-################################################################################
+source('./scripts/RescaleRasters.R')
 
 x <- read.csv(file.path(system.file(package="dismo"), 'ex', 'bradypus.csv'))
 x <- x[,c('lon', 'lat')]
@@ -175,47 +175,15 @@ ob <- postProcessSDM(rast_cont, thresh_metric = 'sensitivity', quant_amt = 0.25)
 f_rasts <- ob$f_rasts
 thresh <- ob$thresh
 
-
-
-
 ########### HERE WE CREATE A COPY OF THE RASTER PREDICTORS WHERE WE HAVE 
 # STANDARDIZED EACH VARIABLE - SO IT IS EQUIVALENT TO THE INPUT TO THE GLMNET
 # FUNCTION, AND THEN MULTIPLIED IT BY IT'S BETA COEFFICIENT FROM THE FIT MODEL
 # WE CAN USE THESE VALUES FOR CLUSTERING GOING FORWARDS. THEY REFLECT THE RELATIVE
 # IMPORTANCE OF EACH VARIABLE IN STRUCTURE OUR MODELS. 
 
-RescaleRasters <- function(x){}
-
-sdN <- function(x){sigma=sqrt((1/length(x)) * sum((x-mean(x))^2))}
-
-coef_tab <- data.frame(
-    Variable = row.names(as.data.frame(as.matrix(coef(mod)))), 
-    Coefficient = as.numeric(coef(mod))
-  )
-coef_tab <- coef_tab[2:nrow(coef_tab),]
-
-# now calculate the beta coefficient 
-yvar <- sdN(as.numeric(train$occurrence)-1)
-coef_tab$BetaCoefficient <- apply(pred_mat, 2, FUN = sdN)
-coef_tab$BetaCoefficient <- coef_tab$Coefficient / yvar * coef_tab$BetaCoefficient
-
-# this rescales the raster to be equivalent to the inputs to the elastic net model. 
-# after this they still need to be multiplied by the beta coefficients 
-pred_rescale <- preds
-for (i in seq_along(1:dim(pred_rescale)[3])){
-  
-  lyr_name <- names(pred_rescale)[[i]]
-  vals <- pred_mat[,lyr_name]
-  pred_rescale[[i]] <- terra::app(pred_rescale[[i]], 
-                           fun = function(x){(x - mean(vals)) / sdN(vals)})
-  
-  pred_rescale[[i]] <- pred_rescale[[i]] * abs(coef_tab[coef_tab$Variable==lyr_name,'BetaCoefficient'])
-  names(pred_rescale[[i]]) <- lyr_name
-  
-}
-
-terra::plot(pred_rescale)
-terra::plot(f_rasts)
+rr <- RescaleRasters(model = mod, predictors = preds, training_data = train)
+pred_rescale <- rr$rescaled_predictors
+coefficient_table <- rr$coefficient_table
 
 writeSDMresults(
   file.path( 'results', 'SDM'), 'Bradypus_test')

@@ -1,3 +1,9 @@
+#' Create environmental and spatial clusters for targeting collection areas
+#' 
+#' This function utilizes the output from an elastic net GLM model to create a weights matrix of
+#' features relevant to a species distribution to identify clusters throughout it's range while
+#' incorporating the PCNM/MEM data and coordinates to implement some spatial contiguity. 
+#' 
 #' @param pred_rescale a rasterstack of predictor layers which have been rescaled to represent the beta coefficients from the elastic net (glmnet::glmnet) modelling process. See ?RescaleRasters for an implementation of this functionality. 
 #' @param f_rasts The rasters output from the SDM workflow. 
 #' @param path a root path where each output data will be saved, use the same as in `WriteSDMresults`.
