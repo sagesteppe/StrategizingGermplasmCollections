@@ -60,7 +60,7 @@ PointBasedSample <- function(polygon, n, collections, reps, BS.reps){
   #' some of the default points and replacing them with existing collections to 
   #' build the future collections around. 
   #' 
-  #' @param polygon the input sf polygon, i.e. species range or administrative unit, where sampling is desired. 
+  #' @param polygon The input sf polygon, i.e. species range or administrative unit, where sampling is desired. 
   #' @param n Numeric. The total number of desired collections. Defaults to 20.
   #' @param collections an sf point geometry data set of where existing collections have been made.
   #' @param reps Numeric. The number of times to rerun the voronoi algorithm, the set of polygons with the most similar sizes, as
@@ -113,7 +113,6 @@ PointBasedSample <- function(polygon, n, collections, reps, BS.reps){
   
   # but we only select sets of records which actually meet the sample size requirements, 
   # a few weird ones always get through otherwise. 
-  
   SelectedSample <- voronoiPolygons[which.min(variance)][[1]]$Polygons 
   
   SelectedSample <- sf::st_as_sf(SelectedSample) |>

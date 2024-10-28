@@ -87,7 +87,6 @@ rm(index)
 indices_knndm <- CAST::knndm(train, predictors, k=5)
 
 # Recursive feature elimination using CAST developed folds
-
 train_dat <- sf::st_drop_geometry(train[, -which(names(train) %in% c("occurrence"))])
 ctrl <- caret::rfeControl(
   method = "LG0CV",
@@ -175,19 +174,20 @@ ob <- postProcessSDM(rast_cont, thresh_metric = 'sensitivity', quant_amt = 0.25)
 f_rasts <- ob$f_rasts
 thresh <- ob$thresh
 
-########### HERE WE CREATE A COPY OF THE RASTER PREDICTORS WHERE WE HAVE 
+########### CREATE A COPY OF THE RASTER PREDICTORS WHERE WE HAVE 
 # STANDARDIZED EACH VARIABLE - SO IT IS EQUIVALENT TO THE INPUT TO THE GLMNET
 # FUNCTION, AND THEN MULTIPLIED IT BY IT'S BETA COEFFICIENT FROM THE FIT MODEL
-# WE CAN USE THESE VALUES FOR CLUSTERING GOING FORWARDS. THEY REFLECT THE RELATIVE
-# IMPORTANCE OF EACH VARIABLE IN STRUCTURE OUR MODELS. 
 
 rr <- RescaleRasters(model = mod, predictors = preds, training_data = train)
-pred_rescale <- rr$rescaled_predictors
-coefficient_table <- rr$coefficient_table
 
+pred_rescale <- rr$rescaled_predictors
+coef_tab <- rr$coefficient_table
+
+# write out the results of the SDM process. 
 writeSDMresults(
   file.path( 'results', 'SDM'), 'Bradypus_test')
 
+# perform the clustering 
 EnvironmentalBasedSample(
   pred_rescale = pred_rescale, 
   path = file.path( 'results', 'SDM'),
@@ -197,3 +197,6 @@ EnvironmentalBasedSample(
     '+proj=laea +lon_0=-421.171875 +lat_0=-16.8672134 +datum=WGS84 +units=m +no_defs',
   buffer_d = 3, prop_split = 0.8)
 
+
+
+install.packages('CDSE')
