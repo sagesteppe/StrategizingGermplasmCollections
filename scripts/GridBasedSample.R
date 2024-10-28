@@ -192,7 +192,7 @@ GridBasedSample <- function(x, planar_projection){
   # now number the grids in a uniform fashion
   cents <- sf::st_point_on_surface(final_grids)
   cents <- cents |>
-    mutate(
+    dplyr::mutate(
       X = sf::st_coordinates(cents)[,1],
       Y = sf::st_coordinates(cents)[,2]
     ) |>

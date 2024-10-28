@@ -71,11 +71,8 @@ x <- terra::extract(predictors, x, bind = TRUE) |>
   sf::st_as_sf() 
 
 # Step 1.2 - create a data split for testing the residuals of the glmnet model
-# It's not ideal to do a simple split of these data, because SAC will mean that
-# our results could be overly optimistic. SO we don't report these results, 
-# we only use them to calculate the residuals from glmnet to then
-# calculate MORANS I to determine the effect of spatial
-# autocorrelation on the model. 
+# It's not ideal to do a simple split of these data, because spatial autocorrelation
+# will mean that our results could be overly optimistic. 
 
 index <- unlist(caret::createDataPartition(x$occurrence, p=0.8)) # @ ARGUMENT TO FN @PARAM
 train <- x[index,]
@@ -134,7 +131,8 @@ rm(cv_model)
 
 obs <- createPCNM_fitModel(
     x = train, 
-    planar_proj = '+proj=laea +lon_0=-421.171875 +lat_0=-16.8672134 +datum=WGS84 +units=m +no_defs')
+    planar_proj = 
+      '+proj=laea +lon_0=-421.171875 +lat_0=-16.8672134 +datum=WGS84 +units=m +no_defs')
 
 mod <- obs$mod; cv_model <- obs$cv_model; pcnm <- obs$pcnm
 pred_mat <- obs$pred_mat
@@ -197,6 +195,3 @@ EnvironmentalBasedSample(
     '+proj=laea +lon_0=-421.171875 +lat_0=-16.8672134 +datum=WGS84 +units=m +no_defs',
   buffer_d = 3, prop_split = 0.8)
 
-
-
-install.packages('CDSE')

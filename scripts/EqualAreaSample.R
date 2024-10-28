@@ -4,31 +4,36 @@
 #' range, using kmeans clustering. 
 #' @param x An SF object or terra spatraster. the range over which to generate the clusters.
 #' @param n Numeric. the number of clusters desired. Defaults to 20. 
-#' @param pts Numeric. the number of points to use for generating the clusters, these will be placed in a grid like fashion across `x`. The exact number of points used may deviate slightly from the user submitted value to allow for equidistant spacing across `x`. Defaults to 10,000
+#' @param pts Numeric. the number of points to use for generating the clusters, these will be placed in a grid like fashion across `x`. The exact number of points used may deviate slightly from the user submitted value to allow for equidistant spacing across `x`. Defaults to 5,000.
 #' @param planar_projection Numeric, or character vector. An EPSG code, or a proj4 string, for a planar coordinate projection, in meters, for use with the function. For species with very narrow ranges a UTM zone may be best (e.g. 32611 for WGS84 zone 11 north, or 29611 for NAD83 zone 11 north). Otherwise a continental scale projection like 5070 See https://projectionwizard.org/ for more information on CRS. The value is simply passed to sf::st_transform if you need to experiment. 
-#' @param returnProjected. Boolean. Whether to return the data set in the original input CRS (FALSE), or in the new `projection` (True). Defaults to FALSE
+#' @param returnProjected. Boolean. Whether to return the data set in the original input CRS (FALSE), or in the new `projection` (TRUE). Defaults to FALSE. 
 #' @param reps Numeric. The number of times to rerun the voronoi algorithm, the set of polygons with the most similar sizes, as
-#' measured using their variance of areas will be selected. Defaults to 150, which may accomplish around 100 succesful iterations.  
+#' measured using their variance of areas will be selected. Defaults to 100. 
 #' @BS.reps number of bootstrap replicates for evaluating results. 
 #' @examples \donttest{
 #' nc <- sf::st_read(system.file("shape/nc.shp", package="sf")) |>
 #' dplyr::select(NAME)
 #'
-#' zones <- EqualAreaSample(nc, n = 20, pts = 1000, projection = 32617)
-#'
+#' set.seed(1)
+#' system.time(
+#'   zones <- EqualAreaSample(nc, n = 20, pts = 1000, planar_projection = 32617, reps = 100)
+#' )
+#' 
 #' plot(nc, main = 'Counties of North Carolina')
 #' plot(zones, main = 'Clusters')
 #' }
 #' @export
 EqualAreaSample <- function(x, n, pts, planar_projection, returnProjected, reps, BS.reps){
   
-  if(missing(n)){n <- 20}; if(missing(pts)){pts <- 10000}
+  if(missing(n)){n <- 20}; if(missing(pts)){pts <- 5000}
   if(missing(planar_projection)){
     message(
       'Argument to `planar_projection` is required. A suitable choice for all of North America is 5070.')
     }
   if(missing(returnProjected)){returnProjected <- FALSE}
   if(missing(BS.reps)){BS.reps = 9999}
+  if(missing(reps)){reps = 100}
+  
   
   if(returnProjected == TRUE){
     x <- sf::st_transform(x, planar_projection)
@@ -131,17 +136,7 @@ EqualAreaSample <- function(x, n, pts, planar_projection, returnProjected, reps,
         npbs[['bca']][['upper']], reps, length(variance),  BS.reps)
     ),
     'Geometry' = SelectedSample)
+  
   return(output)
+  
 }
-
-library(tidyverse)
-nc <- spData::us_states |>
-  filter(NAME == 'Rhode Island')
-
-
-system.time(
-  zones <- EqualAreaSample(nc, n = 20, pts = 1000, planar_projection = 32617, reps = 250)
-)
-
-plot(zones$Geometry, main = 'Counties of North Carolina')
-plot(zones, main = 'Clusters')

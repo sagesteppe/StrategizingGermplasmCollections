@@ -7,9 +7,13 @@ existing_collections <- sf::st_sample(nc, size = 5) |>
   sf::st_as_sf() |>
   dplyr::rename(geometry = x)
 
-out <- PointBasedSample(polygon = nc, reps = 150)
-head(out$SummaryData)
-plot(out$Geometry)
+system.time(
+  out <- PointBasedSample(polygon = nc, reps = 150) 
+)
+
+ggplot2::ggplot() + 
+  ggplot2::geom_sf(data = out$Geometry, ggplot2::aes(fill = ID)) + 
+  ggplot2::geom_sf(data = existing_collections) 
 
 #' Generate a sampling grid using points as the input data - including existing collections
 #' 
@@ -30,11 +34,14 @@ plot(out$Geometry)
 #'   sf::st_as_sf() |>
 #'   dplyr::rename(geometry = x)
 #'
-#' out <- PointBasedSample(polygon = nc, reps = 10, BS.reps = 10) # set very low for example
+#' system.time(
+#'   out <- PointBasedSample(polygon = nc, reps = 150) 
+#' ) # set very low for example
 #' # the function is actually very fast; 150 voronoi reps, with 9999 BS should only take about
-#' # 2 seconds per species so not much concern on the speed end of things!
-#' head(out$SummaryData)
-#' plot(out$Geometry)
+#' # 7 seconds per species so not much concern on the speed end of things.
+#' ggplot2::ggplot() + 
+#'   ggplot2::geom_sf(data = out$Geometry, ggplot2::aes(fill = ID)) + 
+#    ggplot2::geom_sf(data = existing_collections) 
 #' @export
 PointBasedSample <- function(polygon, n, collections, reps, BS.reps){
   
@@ -112,12 +119,22 @@ PointBasedSample <- function(polygon, n, collections, reps, BS.reps){
   
   # but we only select sets of records which actually meet the sample size requirements, 
   # a few weird ones always get through otherwise. 
+  SelectedSample <- voronoiPolygons[which.min(variance)][[1]]$Polygons |>
+    sf::st_as_sf()
   
-  SelectedSample <- voronoiPolygons[which.min(variance)][[1]]$Polygons 
+  ss_cents <- sf::st_point_on_surface(SelectedSample)
+  ss_cents <- ss_cents |>
+    dplyr::mutate(
+      X = sf::st_coordinates(ss_cents)[,1],
+      Y = sf::st_coordinates(ss_cents)[,2]
+    ) |>
+    dplyr::arrange(-Y, X) |>
+    dplyr::mutate(ID = 1:dplyr::n()) 
   
-  SelectedSample <- sf::st_as_sf(SelectedSample) |>
-    dplyr::rename(geometry = x)
-  
+  SelectedSample <- dplyr::mutate(
+    SelectedSample, 
+    ID = as.numeric(sf::st_intersects(SelectedSample, ss_cents)), .before = 1)
+
   # Determining the 0.1% quantile for the variance in size of the sampling grids. 
   # Using non-parametric approaches, of bootstrap resampling (replicates = 9999) ,
   # with an 95% confidence level. 
@@ -145,7 +162,7 @@ PointBasedSample <- function(polygon, n, collections, reps, BS.reps){
         min(variance), npbs[['t0']], npbs[['bca']][['lower']], 
         npbs[['bca']][['upper']], reps, length(variance),  BS.reps)
     ),
-  'Geometry' = SelectedSample)
+  'Geometry' = SelectedSample) 
   
   return(output)
   
