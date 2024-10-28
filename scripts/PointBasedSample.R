@@ -95,17 +95,18 @@ PointBasedSample <- function(polygon, n, collections, reps, BS.reps){
   if(missing(collections)){
     voronoiPolygons <- replicate(
       reps, 
-      VoronoiSampler(polygon = nc, n = n), 
+      VoronoiSampler(polygon = polygon, n = n), 
       simplify = FALSE)} else {
         voronoiPolygons <- replicate(
           reps, 
-          VoronoiSampler(polygon = nc, n = n, collections = collections), 
+          VoronoiSampler(polygon = polygon, n = n, collections = collections), 
           simplify = FALSE)
       }
   
   # sf oftentimes gives fewer points than asked for, we will keep only the objects 
   # which have the desired number of points
-  voronoiPolygons <- voronoiPolygons[lapply(get_elements(voronoiPolygons, 'Polygons'), length) >= 20]
+  voronoiPolygons <- voronoiPolygons[
+    lapply(get_elements(voronoiPolygons, 'Polygons'), length) >= n]
   
   # we use variance to determine the configuration of voronoi polygons which have
   # the most equally sized polygons. 
@@ -130,6 +131,7 @@ PointBasedSample <- function(polygon, n, collections, reps, BS.reps){
     x = variance, 
     statistic = quantile, 
     R = BS.reps, 
+    na.rm = TRUE, 
     probs = c(0.001), 
     level = 0.95) 
   
