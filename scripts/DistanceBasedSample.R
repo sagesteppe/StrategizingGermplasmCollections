@@ -78,7 +78,7 @@ geo_clusters <- hclust(resDist_scaled,  method = 'ward.D2') # create a hierarchi
 # clustering tree. 
 plot(geo_clusters)
 
-####### THIS WORKS, BUT WE ARE UNABLE TO USE ALL INDICES. 
+####### THIS WORKS, BUT WE ARE UNABLE TO USE ALL INDICES, just silhouette plots. 
 NoClusters <- NbClust::NbClust(
   data = as.dist(resDist),
   diss = resDist_scaled, distance = NULL,
@@ -101,10 +101,19 @@ text(popCoord$x-0.5,  popCoord$y-0.75, labels = popCoord$Cluster, cex= 0.5)
 
 
 
+
 #################################################################################
 #                         TRANSITION LAYER PLAY                                #
 
 library(terra)
+library(gdistance)
+
+template <- terra::rast('../results/SDM/Raster/Bradypus_test.tif')
+
+domain <- terra::crop(
+  template$Supplemented, 
+  terra::ext(terra::as.polygons(template$Supplemented))
+  )
 
 setwd('~/Documents/assoRted/StrategizingGermplasmCollections/scripts')
 p2dat <- '~/Documents/Geospatial/'
@@ -114,9 +123,76 @@ f <- paste0(
   c('gt30w060n40.tif', 'gt30w100n40.tif', 'gt30w100s10.tif', 'gt30w060s10.tif'))
 
 elev <- terra::mosaic(terra::sprc(paste0(p2dat, f)))
-slope <- raster::raster(terra::terrain(elev, "slope", neighbors=8))
-
+elev <- terra::crop(elev, domain)
+slope <- terra::terrain(elev, "slope", neighbors=8)
+slope <- terra::resample(slope, domain)
+m_val <- terra::global(slope, max, na.rm = TRUE)
+slope <- raster::raster(terra::subst(slope, NA, m_val*10))
 rm(f)
+
+tr <- transition(slope, mean, directions = 8)
+trC <- geoCorrection(tr, "r", scl = TRUE)
+
+pts <- sf::st_sample(
+  sf::st_as_sf(terra::as.polygons(template$Supplemented)),
+  size = 500) |>
+  sf::st_as_sf() |>
+  sf::st_coordinates() |>
+  as.matrix()
+
+
+geoDist <- pointDistance(
+  pts, 
+  longlat = TRUE) # calculate great circle distances between
+# locations. 
+
+
+# manually (arbitrarily) setting cluster number works.... 
+geoDist_scaled <- dist(scale(geoDist), method = 'euclidean') # scale variables
+geo_clusters <- hclust(geoDist_scaled,  method = 'ward.D2') # create a hierarchical 
+
+plot(geo_clusters)
+
+NoClusters <- NbClust::NbClust(
+  data = as.dist(geoDist),
+  diss = geoDist_scaled, distance = NULL,
+  min.nc = 2, max.nc = 20, 
+  method = 'complete', index = 'silhouette'
+)
+
+
+pts <- data.frame(pts)
+
+pts$Cluster <- NoClusters$Best.partition # assign clusters to original data. 
+plot(pts$X, pts$Y, col = pts$Cluster) # visualize results - so many
+# clusters impossible for me to tell te colours apart... 
+text(pts$X-0.5,  pts$Y-0.75, labels = pts$Cluster, cex= 0.5)
+
+
+
+
+
+test <- commuteDistance(trC, pts)
+pts <- data.frame(pts)
+
+# try out on this data set real quick... 
+
+# manually (arbitrarily) setting cluster number works.... 
+resDist_scaled <- dist(scale(test), method = 'euclidean') # scale variables
+geo_clusters <- hclust(resDist_scaled,  method = 'ward.D2') # create a hierarchical 
+plot(geo_clusters)
+
+pts$Cluster <- cutree(geo_clusters, 7) # assign clusters to original data. 
+plot(pts$X, pts$Y, col = pts$Cluster) # visualize results
+text(pts$X+0.5,  pts$Y+0.75, cex= 0.6)
+
+
+
+
+plot(slope)
+
+
+
 
 # now burn the rivers into a layer as a feature which is highly resistant to movement. 
 rivers <- terra::vect(paste0(p2dat, 'major_rivers/MajorRivers.shp'))
@@ -152,5 +228,6 @@ lakes <- terra::rasterize(terra::vect(lakes), r, field = 'Lake', background = NA
 impermeable <- terra::app( c(lakes, rivers), mean, na.rm= TRUE)
 plot(impermeable)
 
-terra::writeRaster(impermeable, 'Rivertest.tif', overwrite = TRUE)
+
+# terra::writeRaster(impermeable, 'Rivertest.tif', overwrite = TRUE)
 rm(rivers, lakes)
