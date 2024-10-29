@@ -8,7 +8,7 @@
 #' @param f_rasts The rasters output from the SDM workflow. 
 #' @param path a root path where each output data will be saved, use the same as in `WriteSDMresults`.
 #' @param taxon Character. the name of the taxonomic entity for which the models were created. The final raster of clusters, the results from both KNN classifier trainings, and details of the clustering procedure (if fixedClusters=TRUE).
-#' @param n Numeric. the number of clusters desired. If using the 
+#' @param n Numeric. the number of clusters desired. 
 #' @param fixedClusters Boolean. Defaults to TRUE, which will create n clusters. If False then use NbClust::NbClust to determine the number of clusters.
 #' @param n_pts Numeric. the number of points to use for generating the clusters, these will be randomly sampled within the mask area `mask`. Defaults to 500. 
 #' @param planar_proj Numeric, or character vector. An EPSG code, or a proj4 string, for a planar coordinate projection, in meters, for use with the function. For species with very narrow ranges a UTM zone may be best (e.g. 32611 for WGS84 zone 11 north, or 29611 for NAD83 zone 11 north). Otherwise a continental scale projection like 5070 See https://projectionwizard.org/ for more information on CRS. The value is simply passed to sf::st_transform if you need to experiment. 
@@ -22,6 +22,7 @@ EnvironmentalBasedSample <- function(pred_rescale, f_rasts, taxon, path, n, fixe
   
   if(missing(fixedClusters)){fixedClusters <- TRUE}
   if(missing(prop_split)){prop_split <- 0.8}
+  if(missing(n_pts)){n_pts <- 500}
   if(missing(buffer_d)){buffer_d <- 3}
   if(missing(coord_wt)){coord_wt <- 2.5}
   
